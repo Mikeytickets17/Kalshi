@@ -168,6 +168,7 @@ class CopyTradingBot:
                     self._portfolio_value,
                     self._active_positions,
                     proposed_category=evaluation.market_info.category if evaluation.market_info else "",
+                    source_wallet=signal.wallet_address,
                 )
                 if not can_trade:
                     logger.warning("Risk check failed: %s", risk_reason)
@@ -307,7 +308,7 @@ class CopyTradingBot:
         # Update state
         self._available_balance += position.size + pnl
         self._portfolio_value += pnl
-        self._risk_manager.record_trade_result(pnl)
+        self._risk_manager.record_trade_result(pnl, source_wallet=position.source_wallet)
         self._sizer.portfolio_value = self._portfolio_value
 
         del self._active_positions[market_id]

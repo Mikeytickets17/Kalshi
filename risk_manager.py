@@ -15,6 +15,36 @@ from polymarket import Position
 logger = logging.getLogger(__name__)
 
 
+WALLET_COOLDOWN_TRADES: int = 20  # Reset wallet stats after this many observed signals
+WALLET_PAUSE_MIN_TRADES: int = 10  # Minimum trades before wallet can be paused
+WALLET_PAUSE_WR_THRESHOLD: float = 0.55  # Pause wallet below this live win rate
+WALLET_PAUSE_CONSEC_LOSSES: int = 4  # Pause wallet after this many consecutive losses
+
+
+@dataclass
+class WalletPerformance:
+    """Tracks real-time performance of a wallet source."""
+    trades: int = 0
+    wins: int = 0
+    total_pnl: float = 0.0
+    consecutive_losses: int = 0
+    signals_since_pause: int = 0  # Count signals seen while paused
+    paused: bool = False
+
+    @property
+    def win_rate(self) -> float:
+        return self.wins / max(self.trades, 1)
+
+    def reset(self) -> None:
+        """Reset stats for a new evaluation window."""
+        self.trades = 0
+        self.wins = 0
+        self.total_pnl = 0.0
+        self.consecutive_losses = 0
+        self.signals_since_pause = 0
+        self.paused = False
+
+
 @dataclass
 class RiskState:
     """Current risk state of the portfolio."""
@@ -27,6 +57,7 @@ class RiskState:
     losing_trades: int = 0
     halted: bool = False
     halt_reason: str = ""
+    wallet_performance: dict[str, WalletPerformance] = field(default_factory=dict)
 
 
 class RiskManager:
@@ -64,6 +95,7 @@ class RiskManager:
         active_positions: dict[str, Position],
         proposed_category: str = "",
         proposed_size: float = 0.0,
+        source_wallet: str = "",
     ) -> tuple[bool, str]:
         """
         Check if a new trade is allowed given current risk state.
@@ -112,9 +144,47 @@ class RiskManager:
                     f"${max_category:.2f} ({config.MAX_CATEGORY_EXPOSURE_PCT:.0%})"
                 )
 
+        # Check 6: Wallet-level performance — pause wallets with poor live results
+        if source_wallet:
+            if source_wallet not in self._state.wallet_performance:
+                self._state.wallet_performance[source_wallet] = WalletPerformance()
+            wp = self._state.wallet_performance[source_wallet]
+
+            # If wallet is paused, count signals and reset after cooldown
+            if wp.paused:
+                wp.signals_since_pause += 1
+                if wp.signals_since_pause >= WALLET_COOLDOWN_TRADES:
+                    logger.info(
+                        "Wallet %s cooldown expired after %d signals, resetting stats",
+                        source_wallet[:10], wp.signals_since_pause,
+                    )
+                    wp.reset()
+                else:
+                    return False, (
+                        f"Wallet {source_wallet[:10]} paused "
+                        f"({wp.signals_since_pause}/{WALLET_COOLDOWN_TRADES} cooldown)"
+                    )
+
+            # Evaluate after minimum trade count
+            if wp.trades >= WALLET_PAUSE_MIN_TRADES:
+                if wp.win_rate < WALLET_PAUSE_WR_THRESHOLD:
+                    wp.paused = True
+                    wp.signals_since_pause = 0
+                    return False, (
+                        f"Wallet {source_wallet[:10]} live WR {wp.win_rate:.0%} "
+                        f"below {WALLET_PAUSE_WR_THRESHOLD:.0%} after {wp.trades} trades — paused"
+                    )
+                if wp.consecutive_losses >= WALLET_PAUSE_CONSEC_LOSSES:
+                    wp.paused = True
+                    wp.signals_since_pause = 0
+                    return False, (
+                        f"Wallet {source_wallet[:10]} has {wp.consecutive_losses} "
+                        f"consecutive losses — paused"
+                    )
+
         return True, ""
 
-    def record_trade_result(self, pnl: float) -> None:
+    def record_trade_result(self, pnl: float, source_wallet: str = "") -> None:
         """Record the result of a closed trade."""
         self._state.total_trades += 1
         if pnl >= 0:
@@ -123,6 +193,19 @@ class RiskManager:
         else:
             self._state.losing_trades += 1
             self._state.consecutive_losses += 1
+
+        # Track per-wallet performance
+        if source_wallet:
+            if source_wallet not in self._state.wallet_performance:
+                self._state.wallet_performance[source_wallet] = WalletPerformance()
+            wp = self._state.wallet_performance[source_wallet]
+            wp.trades += 1
+            wp.total_pnl += pnl
+            if pnl >= 0:
+                wp.wins += 1
+                wp.consecutive_losses = 0
+            else:
+                wp.consecutive_losses += 1
 
         logger.info(
             "Trade result: pnl=%.2f consecutive_losses=%d win_rate=%.2f%%",

@@ -166,27 +166,33 @@ class SignalEvaluator:
         return ""
 
     def _compute_confidence(self, signal: TradeSignal, market: MarketInfo) -> float:
-        """Compute a 0.0–1.0 confidence score for the signal."""
+        """
+        Compute a 0.0–1.0 confidence score for the signal.
+
+        Weights:
+          - Wallet win rate:       30%  (raw WR, already filtered >= MIN)
+          - Position conviction:   25%  (wallet's sizing relative to portfolio)
+          - Multi-wallet converge: 20%  (multiple wallets entering same market)
+          - Wallet weight/trust:   25%  (our confidence weight for this wallet)
+        """
         score = 0.0
 
-        # Factor 1: Wallet win rate (0–0.35)
-        # Scale from MIN_WALLET_WIN_RATE to 1.0 -> 0.0 to 0.35
-        wr_range = 1.0 - config.MIN_WALLET_WIN_RATE
-        wr_normalized = (signal.wallet_win_rate - config.MIN_WALLET_WIN_RATE) / wr_range if wr_range > 0 else 0.0
-        score += min(wr_normalized, 1.0) * 0.35
+        # Factor 1: Wallet win rate (0–0.30)
+        # Use the raw win rate directly — filter already ensures >= MIN_WALLET_WIN_RATE
+        score += min(signal.wallet_win_rate, 1.0) * 0.30
 
-        # Factor 2: Position conviction — larger position relative to wallet portfolio (0–0.25)
-        # wallet_portfolio_pct > 5% is considered high conviction
+        # Factor 2: Position conviction (0–0.25)
+        # wallet_portfolio_pct > 10% is maximum conviction; scale linearly
         conviction = min(signal.wallet_portfolio_pct / 0.10, 1.0)
         score += conviction * 0.25
 
-        # Factor 3: Multi-wallet convergence (0–0.25)
+        # Factor 3: Multi-wallet convergence (0–0.20)
         convergence_count = self._count_convergent_signals(signal.market_id)
         convergence_score = min(convergence_count / 3.0, 1.0)
-        score += convergence_score * 0.25
+        score += convergence_score * 0.20
 
-        # Factor 4: Wallet weight (0–0.15)
-        score += signal.wallet_weight * 0.15
+        # Factor 4: Wallet weight/trust score (0–0.25)
+        score += signal.wallet_weight * 0.25
 
         return round(min(score, 1.0), 4)
 
