@@ -248,7 +248,8 @@ class PolymarketClient:
         """Simulate an order fill in paper mode."""
         order_id = f"paper-{int(time.time() * 1000)}"
         slippage = 0.002
-        filled_price = price * (1 + slippage) if side == Side.YES else price * (1 - slippage)
+        # Slippage always costs us — we pay more for YES, pay more for NO
+        filled_price = price * (1 + slippage) if side == Side.YES else price * (1 + slippage)
         filled_price = round(max(0.01, min(0.99, filled_price)), 4)
         logger.info(
             "[PAPER] Filled %s %s %.2f USDC @ %.4f (token=%s, order=%s)",

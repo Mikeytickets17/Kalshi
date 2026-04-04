@@ -41,7 +41,7 @@ class SignalEvaluator:
         self._active_positions = active_positions
         # Track recent signals per market for multi-wallet convergence
         self._recent_signals: dict[str, list[TradeSignal]] = {}
-        self._signal_window_seconds: int = 3600  # 1-hour window for convergence
+        self._signal_window_seconds: int = config.CONVERGENCE_WINDOW_SECONDS
 
     def evaluate(self, signal: TradeSignal) -> EvaluationResult:
         """Evaluate a trade signal and decide whether to copy it."""
@@ -187,7 +187,7 @@ class SignalEvaluator:
         score += conviction * 0.25
 
         # Factor 3: Multi-wallet convergence (0–0.20)
-        convergence_count = self._count_convergent_signals(signal.market_id)
+        convergence_count = self._count_convergent_signals(signal.market_id, signal.side)
         convergence_score = min(convergence_count / 3.0, 1.0)
         score += convergence_score * 0.20
 
@@ -209,8 +209,8 @@ class SignalEvaluator:
         ]
         self._recent_signals[signal.market_id].append(signal)
 
-    def _count_convergent_signals(self, market_id: str) -> int:
-        """Count unique wallets that have signaled the same market recently."""
+    def _count_convergent_signals(self, market_id: str, side: str) -> int:
+        """Count unique wallets that have signaled the same market AND side recently."""
         signals = self._recent_signals.get(market_id, [])
-        unique_wallets = {s.wallet_address for s in signals}
+        unique_wallets = {s.wallet_address for s in signals if s.side == side}
         return len(unique_wallets)

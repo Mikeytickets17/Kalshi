@@ -114,15 +114,22 @@ class CopyTradingBot:
         # Cancel all open orders
         self._client.cancel_all_orders()
 
-        # Close all positions in paper mode (log only)
-        if self._paper_mode and self._active_positions:
-            logger.info("Closing %d paper positions...", len(self._active_positions))
+        # Close all open positions and record PnL
+        if self._active_positions:
+            logger.info("Closing %d positions on shutdown...", len(self._active_positions))
             for market_id, pos in list(self._active_positions.items()):
-                pnl = (pos.current_price - pos.avg_price) * pos.size
+                if pos.side == Side.YES:
+                    pnl = (pos.current_price - pos.avg_price) * pos.size
+                else:
+                    pnl = (pos.avg_price - pos.current_price) * pos.size
+                self._risk_manager.record_trade_result(pnl, source_wallet=pos.source_wallet)
+                self._portfolio_value += pnl
                 logger.info(
-                    "[PAPER] Closed %s: entry=%.4f current=%.4f pnl=$%.2f",
-                    market_id, pos.avg_price, pos.current_price, pnl,
+                    "%s Closed %s: side=%s entry=%.4f current=%.4f pnl=$%.2f",
+                    "[PAPER]" if self._paper_mode else "[LIVE]",
+                    market_id, pos.side.value, pos.avg_price, pos.current_price, pnl,
                 )
+            self._active_positions.clear()
 
         # Send shutdown notification
         risk_summary = self._risk_manager.get_summary()
@@ -282,10 +289,15 @@ class CopyTradingBot:
             return True, reason
 
         # Exit condition 2: Time-based exit (near expiry + profitable)
-        # In paper mode, skip time-based exits since we don't have real end dates
+        if not self._paper_mode and position.condition_id:
+            market = self._client.get_market(position.condition_id)
+            if market and market.end_date_ts > 0:
+                time_remaining = market.end_date_ts - time.time()
+                if time_remaining < config.EXIT_TIME_BUFFER_SECONDS and position.unrealized_pnl > 0:
+                    return True, f"Time exit: {time_remaining:.0f}s left, locking ${position.unrealized_pnl:.2f} gain"
 
         # Exit condition 3: Wallet closed their position
-        # (would require tracking the source wallet's position — simplified here)
+        # Requires tracking source wallet's position via wallet_tracker (future enhancement)
 
         return False, ""
 

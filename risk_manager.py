@@ -9,16 +9,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+import datetime
+
 import config
-from polymarket import Position
+from polymarket import Position, Side
 
 logger = logging.getLogger(__name__)
 
 
-WALLET_COOLDOWN_TRADES: int = 20  # Reset wallet stats after this many observed signals
-WALLET_PAUSE_MIN_TRADES: int = 10  # Minimum trades before wallet can be paused
-WALLET_PAUSE_WR_THRESHOLD: float = 0.55  # Pause wallet below this live win rate
-WALLET_PAUSE_CONSEC_LOSSES: int = 4  # Pause wallet after this many consecutive losses
 
 
 @dataclass
@@ -50,7 +48,7 @@ class RiskState:
     """Current risk state of the portfolio."""
     peak_portfolio_value: float = 0.0
     daily_start_value: float = 0.0
-    daily_start_time: float = field(default_factory=time.time)
+    daily_reset_date: str = field(default_factory=lambda: str(datetime.date.today()))
     consecutive_losses: int = 0
     total_trades: int = 0
     winning_trades: int = 0
@@ -83,11 +81,12 @@ class RiskManager:
         if current_value > self._state.peak_portfolio_value:
             self._state.peak_portfolio_value = current_value
 
-        # Reset daily tracking at midnight equivalent (every 24h)
-        if time.time() - self._state.daily_start_time >= 86400:
+        # Reset daily tracking on calendar date change
+        today = str(datetime.date.today())
+        if today != self._state.daily_reset_date:
             self._state.daily_start_value = current_value
-            self._state.daily_start_time = time.time()
-            logger.info("Daily risk counters reset, portfolio=%.2f", current_value)
+            self._state.daily_reset_date = today
+            logger.info("Daily risk counters reset for %s, portfolio=%.2f", today, current_value)
 
     def check_can_trade(
         self,
@@ -132,7 +131,7 @@ class RiskManager:
         # Check 5: Category exposure
         if proposed_category and proposed_size > 0:
             category_exposure = sum(
-                pos.size * pos.current_price
+                pos.size
                 for pos in active_positions.values()
                 if pos.category == proposed_category
             )
@@ -153,7 +152,7 @@ class RiskManager:
             # If wallet is paused, count signals and reset after cooldown
             if wp.paused:
                 wp.signals_since_pause += 1
-                if wp.signals_since_pause >= WALLET_COOLDOWN_TRADES:
+                if wp.signals_since_pause >= config.WALLET_COOLDOWN_TRADES:
                     logger.info(
                         "Wallet %s cooldown expired after %d signals, resetting stats",
                         source_wallet[:10], wp.signals_since_pause,
@@ -162,19 +161,19 @@ class RiskManager:
                 else:
                     return False, (
                         f"Wallet {source_wallet[:10]} paused "
-                        f"({wp.signals_since_pause}/{WALLET_COOLDOWN_TRADES} cooldown)"
+                        f"({wp.signals_since_pause}/{config.WALLET_COOLDOWN_TRADES} cooldown)"
                     )
 
             # Evaluate after minimum trade count
-            if wp.trades >= WALLET_PAUSE_MIN_TRADES:
-                if wp.win_rate < WALLET_PAUSE_WR_THRESHOLD:
+            if wp.trades >= config.WALLET_PAUSE_MIN_TRADES:
+                if wp.win_rate < config.WALLET_PAUSE_WR_THRESHOLD:
                     wp.paused = True
                     wp.signals_since_pause = 0
                     return False, (
                         f"Wallet {source_wallet[:10]} live WR {wp.win_rate:.0%} "
-                        f"below {WALLET_PAUSE_WR_THRESHOLD:.0%} after {wp.trades} trades — paused"
+                        f"below {config.WALLET_PAUSE_WR_THRESHOLD:.0%} after {wp.trades} trades — paused"
                     )
-                if wp.consecutive_losses >= WALLET_PAUSE_CONSEC_LOSSES:
+                if wp.consecutive_losses >= config.WALLET_PAUSE_CONSEC_LOSSES:
                     wp.paused = True
                     wp.signals_since_pause = 0
                     return False, (
@@ -225,11 +224,16 @@ class RiskManager:
         Returns:
             (should_exit, reason)
         """
-        # Stop loss
+        # Stop loss — direction-aware
         if position.avg_price > 0:
-            loss_pct = (position.avg_price - position.current_price) / position.avg_price
+            if position.side == Side.YES:
+                # YES: we profit when price rises, lose when it drops
+                loss_pct = (position.avg_price - position.current_price) / position.avg_price
+            else:
+                # NO: we profit when price drops, lose when it rises
+                loss_pct = (position.current_price - position.avg_price) / (1.0 - position.avg_price) if position.avg_price < 1.0 else 0.0
             if loss_pct >= config.STOP_LOSS_PCT:
-                return True, f"Stop loss triggered: {loss_pct:.2%} loss"
+                return True, f"Stop loss triggered: {loss_pct:.2%} loss (side={position.side.value})"
 
         # Emergency halt — close all positions
         if self._state.halted:
