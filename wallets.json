@@ -1,0 +1,35 @@
+{
+  "wallets": [
+    {
+      "address": "0x8dxd0000000000000000000000000000000000dead",
+      "alias": "0x8dxd",
+      "win_rate": 0.78,
+      "total_trades": 342,
+      "verified_pnl_usdc": 48500.0,
+      "weight": 0.8402,
+      "active": true,
+      "score": 0.8402
+    },
+    {
+      "address": "0xf9e8d7c6b5a4000000000000000000000000000002",
+      "alias": "steady_eddie",
+      "win_rate": 0.81,
+      "total_trades": 128,
+      "verified_pnl_usdc": 22800.0,
+      "weight": 0.8211,
+      "active": true,
+      "score": 0.8211
+    },
+    {
+      "address": "0xa1b2c3d4e5f6000000000000000000000000000001",
+      "alias": "whale_alpha",
+      "win_rate": 0.73,
+      "total_trades": 215,
+      "verified_pnl_usdc": 31200.0,
+      "weight": 0.7959,
+      "active": true,
+      "score": 0.7959
+    }
+  ],
+  "last_updated": 1775341995.0507398
+}
