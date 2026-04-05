@@ -1,5 +1,5 @@
 """
-Configuration for the Polymarket copy-trading bot.
+Configuration for the Kalshi longshot bias trading bot.
 
 All parameters are loaded from environment variables with sensible defaults.
 """
@@ -12,16 +12,21 @@ load_dotenv()
 # --- Mode ---
 PAPER_MODE: bool = os.getenv("PAPER_MODE", "true").lower() == "true"
 
-# --- Wallet Watchlist ---
-WATCHLIST_FILE: str = os.getenv("WATCHLIST_FILE", "wallets.json")
-MIN_WALLET_WIN_RATE: float = float(os.getenv("MIN_WALLET_WIN_RATE", "0.70"))
-WALLET_REFRESH_INTERVAL_HOURS: int = int(os.getenv("WALLET_REFRESH_INTERVAL_HOURS", "6"))
-MIN_WALLET_SCORE: float = float(os.getenv("MIN_WALLET_SCORE", "0.65"))
+# --- Kalshi API ---
+KALSHI_API_KEY_ID: str = os.getenv("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH: str = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+KALSHI_USE_DEMO: bool = os.getenv("KALSHI_USE_DEMO", "true").lower() == "true"
+
+# --- Market Scanning ---
+SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
+MIN_MARKET_VOLUME: float = float(os.getenv("MIN_MARKET_VOLUME", "2000"))
+LONGSHOT_MAX_PRICE: float = float(os.getenv("LONGSHOT_MAX_PRICE", "0.15"))
+FAVORITE_MIN_PRICE: float = float(os.getenv("FAVORITE_MIN_PRICE", "0.70"))
+LONGSHOT_CATEGORIES: list[str] = os.getenv("LONGSHOT_CATEGORIES", "sports,entertainment").split(",")
+FAVORITE_CATEGORIES: list[str] = os.getenv("FAVORITE_CATEGORIES", "economics,politics").split(",")
 
 # --- Signal Evaluation ---
-MIN_MARKET_LIQUIDITY_USDC: float = float(os.getenv("MIN_MARKET_LIQUIDITY_USDC", "50000"))
-MAX_ODDS_SLIPPAGE: float = float(os.getenv("MAX_ODDS_SLIPPAGE", "0.04"))
-COPY_THRESHOLD: float = float(os.getenv("COPY_THRESHOLD", "0.60"))
+SIGNAL_THRESHOLD: float = float(os.getenv("SIGNAL_THRESHOLD", "0.55"))
 MIN_TIME_REMAINING_SECONDS: int = int(os.getenv("MIN_TIME_REMAINING_SECONDS", "300"))
 
 # --- Position Sizing ---
@@ -49,27 +54,11 @@ WALLET_PAUSE_CONSEC_LOSSES: int = int(os.getenv("WALLET_PAUSE_CONSEC_LOSSES", "4
 CONVERGENCE_WINDOW_SECONDS: int = int(os.getenv("CONVERGENCE_WINDOW_SECONDS", "3600"))
 
 # --- Paper Mode Simulation ---
-PAPER_DETECTION_DELAY_MIN: float = float(os.getenv("PAPER_DETECTION_DELAY_MIN", "3.0"))
-PAPER_DETECTION_DELAY_MAX: float = float(os.getenv("PAPER_DETECTION_DELAY_MAX", "8.0"))
 PAPER_INITIAL_BALANCE_USDC: float = float(os.getenv("PAPER_INITIAL_BALANCE_USDC", "10000.0"))
 
-# --- API Keys & Endpoints ---
-POLYGON_RPC_WS: str = os.getenv("POLYGON_RPC_WS", "")
-ALCHEMY_API_KEY: str = os.getenv("ALCHEMY_API_KEY", "")
-DUNE_API_KEY: str = os.getenv("DUNE_API_KEY", "")
-POLY_API_KEY: str = os.getenv("POLY_API_KEY", "")
-POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
+# --- Telegram Notifications ---
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
-
-# --- Polymarket Contract Addresses (Polygon) ---
-POLYMARKET_CTF_EXCHANGE: str = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
-POLYMARKET_NEG_RISK_EXCHANGE: str = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
-USDC_TOKEN_ADDRESS: str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-
-# --- Polymarket CLOB API ---
-POLYMARKET_CLOB_URL: str = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
-POLYMARKET_GAMMA_URL: str = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
 
 # --- Logging ---
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

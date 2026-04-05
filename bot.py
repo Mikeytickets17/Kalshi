@@ -1,7 +1,7 @@
 """
-Polymarket Copy-Trading Bot — Main loop.
+Kalshi Longshot Bias Trading Bot — Main loop.
 
-Orchestrates wallet tracking, signal evaluation, position management,
+Orchestrates market scanning, signal evaluation, position management,
 risk management, and notifications.
 """
 
@@ -14,13 +14,12 @@ import time
 from typing import Optional
 
 import config
+from kalshi import KalshiClient, OrderResult, Position, Side
+from market_scanner import MarketOpportunity, MarketScanner
 from notifier import TelegramNotifier
-from polymarket import OrderResult, PolymarketClient, Position, Side
 from position_sizer import PositionSizer
 from risk_manager import RiskManager
 from signal_evaluator import EvaluationResult, SignalEvaluator
-from wallet_ranker import WalletRanker
-from wallet_tracker import TradeSignal, WalletTracker
 
 # --- Logging Setup ---
 
@@ -35,8 +34,8 @@ logging.basicConfig(
 logger = logging.getLogger("bot")
 
 
-class CopyTradingBot:
-    """Main copy-trading bot that mirrors positions from high-performing wallets."""
+class LongshotBiasBot:
+    """Main bot that exploits longshot and favorite bias on Kalshi."""
 
     def __init__(self) -> None:
         self._paper_mode = config.PAPER_MODE
@@ -49,49 +48,41 @@ class CopyTradingBot:
         self._active_positions: dict[str, Position] = {}
 
         # Components
-        self._client = PolymarketClient()
-        self._tracker = WalletTracker()
+        self._client = KalshiClient()
+        self._scanner = MarketScanner(self._client)
         self._evaluator = SignalEvaluator(self._client, self._active_positions)
         self._sizer = PositionSizer(self._portfolio_value)
         self._risk_manager = RiskManager(self._portfolio_value)
-        self._ranker = WalletRanker()
         self._notifier = TelegramNotifier()
 
         logger.info(
-            "CopyTradingBot initialized: paper_mode=%s portfolio=$%.2f",
-            self._paper_mode, self._portfolio_value,
+            "LongshotBiasBot initialized: paper_mode=%s demo=%s portfolio=$%.2f",
+            self._paper_mode, config.KALSHI_USE_DEMO, self._portfolio_value,
         )
 
     async def run(self) -> None:
         """Main entry point — run the bot."""
         self._running = True
         logger.info("=" * 60)
-        logger.info("Polymarket Copy-Trading Bot starting...")
+        logger.info("Kalshi Longshot Bias Bot starting...")
         logger.info("Mode: %s", "PAPER" if self._paper_mode else "LIVE")
+        logger.info("Environment: %s", "DEMO" if config.KALSHI_USE_DEMO else "PRODUCTION")
         logger.info("Portfolio: $%.2f", self._portfolio_value)
-        logger.info("Watched wallets: %d", len(self._tracker.get_active_addresses()))
-        logger.info("Copy threshold: %.2f", config.COPY_THRESHOLD)
+        logger.info("Scan interval: %ds", config.SCAN_INTERVAL_SECONDS)
+        logger.info("Longshot max price: %.2f", config.LONGSHOT_MAX_PRICE)
+        logger.info("Favorite min price: %.2f", config.FAVORITE_MIN_PRICE)
+        logger.info("Signal threshold: %.2f", config.SIGNAL_THRESHOLD)
         logger.info("Max concurrent positions: %d", config.MAX_CONCURRENT_POSITIONS)
         logger.info("=" * 60)
-
-        # Run initial wallet ranking if needed
-        if self._ranker.should_run():
-            try:
-                self._ranker.run()
-                self._tracker.load_watchlist()
-            except Exception as exc:
-                logger.warning("Initial wallet ranking failed: %s", exc)
 
         # Start concurrent tasks
         tasks = [
             asyncio.create_task(self._signal_processor(), name="signal_processor"),
             asyncio.create_task(self._exit_monitor(), name="exit_monitor"),
-            asyncio.create_task(self._wallet_ranker_loop(), name="wallet_ranker"),
-            asyncio.create_task(self._tracker.start(), name="wallet_tracker"),
+            asyncio.create_task(self._scanner.start(), name="market_scanner"),
         ]
 
         try:
-            # Wait for any task to complete (which means an error or shutdown)
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 if task.exception():
@@ -136,9 +127,8 @@ class CopyTradingBot:
         self._notifier.notify_shutdown(reason, self._portfolio_value, risk_summary)
 
         # Cleanup
-        await self._tracker.stop()
+        await self._scanner.stop()
         self._client.close()
-        self._ranker.close()
         self._notifier.close()
 
         logger.info("Shutdown complete. Final portfolio: $%.2f", self._portfolio_value)
@@ -146,25 +136,25 @@ class CopyTradingBot:
     # --- Signal Processing ---
 
     async def _signal_processor(self) -> None:
-        """Process trade signals from the wallet tracker."""
+        """Process market opportunities from the scanner."""
         logger.info("Signal processor started")
         while self._running:
             try:
-                # Wait for a signal with timeout so we can check _running
                 try:
-                    signal = await asyncio.wait_for(
-                        self._tracker.signal_queue.get(), timeout=5.0
+                    opportunity = await asyncio.wait_for(
+                        self._scanner.signal_queue.get(), timeout=5.0
                     )
                 except asyncio.TimeoutError:
                     continue
 
                 logger.info(
-                    "Processing signal: wallet=%s market=%s side=%s size=$%.2f",
-                    signal.wallet_alias, signal.market_id, signal.side, signal.size_usdc,
+                    "Processing opportunity: %s %s @ %.4f (type=%s, edge=%.4f)",
+                    opportunity.side, opportunity.ticker,
+                    opportunity.current_price, opportunity.opportunity_type, opportunity.edge,
                 )
 
-                # Evaluate the signal
-                evaluation = self._evaluator.evaluate(signal)
+                # Evaluate the opportunity
+                evaluation = self._evaluator.evaluate(opportunity)
 
                 if not evaluation.should_copy:
                     self._notifier.notify_signal_rejected(evaluation)
@@ -175,7 +165,7 @@ class CopyTradingBot:
                     self._portfolio_value,
                     self._active_positions,
                     proposed_category=evaluation.market_info.category if evaluation.market_info else "",
-                    source_wallet=signal.wallet_address,
+                    source_wallet=opportunity.opportunity_type,
                 )
                 if not can_trade:
                     logger.warning("Risk check failed: %s", risk_reason)
@@ -194,24 +184,22 @@ class CopyTradingBot:
                     continue
 
                 # Execute the trade
-                await self._execute_copy_trade(evaluation, size_usdc)
+                await self._execute_trade(evaluation, size_usdc)
 
             except Exception as exc:
                 logger.error("Signal processor error: %s", exc, exc_info=True)
                 await asyncio.sleep(1)
 
-    async def _execute_copy_trade(
+    async def _execute_trade(
         self, evaluation: EvaluationResult, size_usdc: float
     ) -> None:
-        """Execute a copy trade based on the evaluation."""
-        signal = evaluation.signal
-        market_info = evaluation.market_info
+        """Execute a trade based on the evaluation."""
+        opportunity = evaluation.signal
+        ticker = opportunity.ticker
 
-        # Use condition_id as token_id for the order
-        token_id = signal.condition_id or signal.market_id
-
+        # Place limit order — NEVER market orders
         result: OrderResult = self._client.place_order(
-            token_id=token_id,
+            ticker=ticker,
             side=evaluation.side,
             size_usdc=size_usdc,
             price=evaluation.target_price,
@@ -223,16 +211,16 @@ class CopyTradingBot:
 
         # Track the position
         position = Position(
-            market_id=signal.market_id,
-            condition_id=signal.condition_id,
+            market_id=opportunity.market_id,
+            condition_id=ticker,
             side=evaluation.side,
             size=result.filled_size or size_usdc,
             avg_price=result.filled_price or evaluation.target_price,
             current_price=result.filled_price or evaluation.target_price,
-            source_wallet=signal.wallet_address,
-            category=market_info.category if market_info else "unknown",
+            source_wallet=opportunity.opportunity_type,
+            category=opportunity.category,
         )
-        self._active_positions[signal.market_id] = position
+        self._active_positions[opportunity.market_id] = position
         self._available_balance -= size_usdc
 
         self._notifier.notify_trade_opened(
@@ -240,9 +228,10 @@ class CopyTradingBot:
         )
 
         logger.info(
-            "Position opened: market=%s side=%s size=$%.2f price=%.4f (positions: %d/%d)",
-            signal.market_id, evaluation.side.value, size_usdc,
+            "Position opened: %s %s $%.2f @ %.4f (type=%s, positions: %d/%d)",
+            evaluation.side.value, ticker, size_usdc,
             result.filled_price or evaluation.target_price,
+            opportunity.opportunity_type,
             len(self._active_positions), config.MAX_CONCURRENT_POSITIONS,
         )
 
@@ -267,13 +256,15 @@ class CopyTradingBot:
         """Check all exit conditions for a position."""
         # Update current price
         if self._paper_mode:
-            # Simulate price movement in paper mode
-            drift = random.uniform(-0.02, 0.02)
+            drift = random.uniform(-0.01, 0.01)
             position.current_price = max(0.01, min(0.99, position.current_price + drift))
         else:
             price = self._client.get_price(position.condition_id)
             if price is not None:
-                position.current_price = price
+                if position.side == Side.YES:
+                    position.current_price = price
+                else:
+                    position.current_price = 1.0 - price
 
         # Update unrealized PnL
         if position.side == Side.YES:
@@ -289,15 +280,12 @@ class CopyTradingBot:
             return True, reason
 
         # Exit condition 2: Time-based exit (near expiry + profitable)
-        if not self._paper_mode and position.condition_id:
+        if self._client.is_connected and position.condition_id:
             market = self._client.get_market(position.condition_id)
             if market and market.end_date_ts > 0:
                 time_remaining = market.end_date_ts - time.time()
                 if time_remaining < config.EXIT_TIME_BUFFER_SECONDS and position.unrealized_pnl > 0:
                     return True, f"Time exit: {time_remaining:.0f}s left, locking ${position.unrealized_pnl:.2f} gain"
-
-        # Exit condition 3: Wallet closed their position
-        # Requires tracking source wallet's position via wallet_tracker (future enhancement)
 
         return False, ""
 
@@ -308,10 +296,10 @@ class CopyTradingBot:
         pnl = position.unrealized_pnl
 
         if not self._paper_mode:
-            # Place closing order
+            # Place closing order: sell what we hold
             close_side = Side.NO if position.side == Side.YES else Side.YES
             self._client.place_order(
-                token_id=position.condition_id,
+                ticker=position.condition_id,
                 side=close_side,
                 size_usdc=position.size,
                 price=position.current_price,
@@ -328,32 +316,16 @@ class CopyTradingBot:
         self._notifier.notify_trade_closed(position, pnl, reason)
 
         logger.info(
-            "Position closed: market=%s pnl=$%.2f reason=%s (positions: %d/%d)",
+            "Position closed: %s pnl=$%.2f reason=%s (positions: %d/%d)",
             market_id, pnl, reason,
             len(self._active_positions), config.MAX_CONCURRENT_POSITIONS,
         )
 
-    # --- Wallet Ranker Loop ---
-
-    async def _wallet_ranker_loop(self) -> None:
-        """Periodically re-rank wallets."""
-        logger.info("Wallet ranker loop started (interval=%dh)", config.WALLET_REFRESH_INTERVAL_HOURS)
-        while self._running:
-            await asyncio.sleep(60)  # Check every minute
-            if self._ranker.should_run():
-                try:
-                    logger.info("Running scheduled wallet ranking...")
-                    self._ranker.run()
-                    self._tracker.load_watchlist()
-                except Exception as exc:
-                    logger.error("Wallet ranking failed: %s", exc, exc_info=True)
-
 
 async def main() -> None:
     """Entry point for the bot."""
-    bot = CopyTradingBot()
+    bot = LongshotBiasBot()
 
-    # Handle graceful shutdown via signals
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
 
@@ -364,10 +336,7 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Run bot with shutdown monitoring
     bot_task = asyncio.create_task(bot.run())
-
-    # Wait for either the bot to finish or a shutdown signal
     shutdown_task = asyncio.create_task(shutdown_event.wait())
     done, pending = await asyncio.wait(
         [bot_task, shutdown_task],
@@ -384,7 +353,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    print("Starting Polymarket Copy-Trading Bot...")
+    print("Starting Kalshi Longshot Bias Trading Bot...")
     print(f"Mode: {'PAPER' if config.PAPER_MODE else 'LIVE'}")
+    print(f"Environment: {'DEMO' if config.KALSHI_USE_DEMO else 'PRODUCTION'}")
     print(f"Paper balance: ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
     asyncio.run(main())

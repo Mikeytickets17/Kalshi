@@ -1,8 +1,11 @@
 """
-Signal evaluator module.
+Signal evaluator module — Kalshi longshot bias strategy.
 
-Decides whether to copy a detected trade from a watched wallet
-based on filters and a confidence scoring system.
+Evaluates market opportunities from the scanner based on:
+  - Longshot bias: contracts under 15c are overpriced by ~40%
+  - Favorite bias: contracts over 70c are underpriced by ~2-3%
+
+Scores each opportunity 0.0 to 1.0 and passes through those above threshold.
 """
 
 import logging
@@ -11,18 +14,23 @@ from dataclasses import dataclass
 from typing import Optional
 
 import config
-from polymarket import MarketInfo, PolymarketClient, Position, Side
-from wallet_tracker import TradeSignal
+from kalshi import KalshiClient, MarketInfo, Position, Side
+from market_scanner import MarketOpportunity
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class EvaluationResult:
-    """Result of evaluating a trade signal."""
+    """
+    Result of evaluating a market opportunity.
+
+    Maintains the same interface as the Polymarket version so that
+    position_sizer.py and notifier.py work without modification.
+    """
     should_copy: bool
     confidence_score: float
-    signal: TradeSignal
+    signal: MarketOpportunity       # position_sizer reads signal.wallet_weight, etc.
     market_info: Optional[MarketInfo]
     rejection_reason: str = ""
     side: Side = Side.YES
@@ -30,187 +38,154 @@ class EvaluationResult:
 
 
 class SignalEvaluator:
-    """Evaluates trade signals from watched wallets and decides whether to copy."""
+    """Evaluates market opportunities using longshot bias edge calculations."""
 
     def __init__(
         self,
-        client: PolymarketClient,
+        client: KalshiClient,
         active_positions: dict[str, Position],
     ) -> None:
         self._client = client
         self._active_positions = active_positions
-        # Track recent signals per market for multi-wallet convergence
-        self._recent_signals: dict[str, list[TradeSignal]] = {}
-        self._signal_window_seconds: int = config.CONVERGENCE_WINDOW_SECONDS
 
-    def evaluate(self, signal: TradeSignal) -> EvaluationResult:
-        """Evaluate a trade signal and decide whether to copy it."""
-        self._track_signal(signal)
+    def evaluate(self, opportunity: MarketOpportunity) -> EvaluationResult:
+        """Evaluate a market opportunity and decide whether to trade."""
+        # Fetch fresh market info if we have a live connection
+        market_info: Optional[MarketInfo] = None
+        if self._client.is_connected:
+            market_info = self._client.get_market(opportunity.ticker)
 
-        # Fetch market info
-        market_info = self._client.get_market(signal.condition_id)
-        if market_info is None and signal.market_id:
-            market_info = self._client.get_market_by_id(signal.market_id)
-
-        # In paper mode, create synthetic market info if API unavailable
-        if market_info is None and config.PAPER_MODE:
+        # In paper mode, create synthetic MarketInfo from the opportunity
+        if market_info is None:
             market_info = MarketInfo(
-                market_id=signal.market_id,
-                condition_id=signal.condition_id,
-                question=f"Paper market {signal.market_id}",
-                category="paper",
-                yes_price=signal.price if signal.side == "YES" else 1.0 - signal.price,
-                no_price=1.0 - signal.price if signal.side == "YES" else signal.price,
-                liquidity_usdc=100000.0,
-                volume_usdc=500000.0,
-                end_date_ts=int(time.time()) + 86400,
+                market_id=opportunity.market_id,
+                ticker=opportunity.ticker,
+                question=opportunity.title,
+                category=opportunity.category,
+                yes_price=1.0 - opportunity.current_price if opportunity.side == "NO" else opportunity.current_price,
+                no_price=opportunity.current_price if opportunity.side == "NO" else 1.0 - opportunity.current_price,
+                liquidity_usdc=opportunity.volume * 0.5,
+                volume_usdc=opportunity.volume,
+                end_date_ts=opportunity.close_time_ts,
                 active=True,
                 resolved=False,
             )
 
-        if market_info is None:
-            return EvaluationResult(
-                should_copy=False,
-                confidence_score=0.0,
-                signal=signal,
-                market_info=None,
-                rejection_reason="Could not fetch market info",
-            )
-
         # Run filters
-        rejection = self._apply_filters(signal, market_info)
+        rejection = self._apply_filters(opportunity, market_info)
         if rejection:
             logger.info(
-                "Signal rejected: wallet=%s market=%s reason=%s",
-                signal.wallet_alias, signal.market_id, rejection,
+                "Opportunity rejected: %s reason=%s", opportunity.ticker, rejection,
             )
             return EvaluationResult(
                 should_copy=False,
                 confidence_score=0.0,
-                signal=signal,
+                signal=opportunity,
                 market_info=market_info,
                 rejection_reason=rejection,
             )
 
         # Compute confidence score
-        score = self._compute_confidence(signal, market_info)
-        side = Side.YES if signal.side == "YES" else Side.NO
-        target_price = market_info.yes_price if side == Side.YES else market_info.no_price
+        score = self._compute_confidence(opportunity, market_info)
+        side = Side.NO if opportunity.side == "NO" else Side.YES
+        target_price = opportunity.current_price
 
-        should_copy = score >= config.COPY_THRESHOLD
-        if not should_copy:
+        should_trade = score >= config.SIGNAL_THRESHOLD
+        if not should_trade:
             logger.info(
-                "Signal below threshold: wallet=%s market=%s score=%.3f threshold=%.3f",
-                signal.wallet_alias, signal.market_id, score, config.COPY_THRESHOLD,
+                "Opportunity below threshold: %s score=%.3f threshold=%.3f",
+                opportunity.ticker, score, config.SIGNAL_THRESHOLD,
             )
 
         return EvaluationResult(
-            should_copy=should_copy,
+            should_copy=should_trade,
             confidence_score=score,
-            signal=signal,
+            signal=opportunity,
             market_info=market_info,
             side=side,
             target_price=target_price,
         )
 
-    def _apply_filters(self, signal: TradeSignal, market: MarketInfo) -> str:
-        """Apply all filters. Returns rejection reason or empty string if passed."""
-        # Filter: market must be active and not resolved
+    def _apply_filters(self, opp: MarketOpportunity, market: MarketInfo) -> str:
+        """Apply all filters. Returns rejection reason or empty string."""
         if market.resolved:
             return "Market already resolved"
         if not market.active:
             return "Market not active"
 
-        # Filter: minimum liquidity
-        if market.liquidity_usdc < config.MIN_MARKET_LIQUIDITY_USDC:
-            return (
-                f"Market liquidity ${market.liquidity_usdc:.0f} "
-                f"below minimum ${config.MIN_MARKET_LIQUIDITY_USDC:.0f}"
-            )
+        # Volume filter
+        if market.volume_usdc < config.MIN_MARKET_VOLUME:
+            return f"Volume ${market.volume_usdc:.0f} below minimum ${config.MIN_MARKET_VOLUME:.0f}"
 
-        # Filter: time remaining
-        time_remaining = market.end_date_ts - time.time()
-        if time_remaining < config.MIN_TIME_REMAINING_SECONDS:
-            return (
-                f"Time remaining {time_remaining:.0f}s "
-                f"below minimum {config.MIN_TIME_REMAINING_SECONDS}s"
-            )
+        # Time remaining
+        if market.end_date_ts > 0:
+            time_remaining = market.end_date_ts - time.time()
+            if time_remaining < config.MIN_TIME_REMAINING_SECONDS:
+                return f"Time remaining {time_remaining:.0f}s below minimum {config.MIN_TIME_REMAINING_SECONDS}s"
 
-        # Filter: no duplicate position in same market
-        if signal.market_id in self._active_positions:
+        # No duplicate positions
+        if opp.market_id in self._active_positions:
             return "Already have position in this market"
 
-        # Filter: odds slippage
-        current_price = (
-            market.yes_price if signal.side == "YES" else market.no_price
-        )
-        slippage = abs(current_price - signal.price)
-        if slippage > config.MAX_ODDS_SLIPPAGE:
-            return (
-                f"Odds slippage {slippage:.4f} exceeds maximum {config.MAX_ODDS_SLIPPAGE}"
-            )
-
-        # Filter: wallet win rate
-        if signal.wallet_win_rate < config.MIN_WALLET_WIN_RATE:
-            return (
-                f"Wallet win rate {signal.wallet_win_rate:.2f} "
-                f"below minimum {config.MIN_WALLET_WIN_RATE}"
-            )
-
-        # Filter: max concurrent positions
+        # Max concurrent positions
         if len(self._active_positions) >= config.MAX_CONCURRENT_POSITIONS:
-            return (
-                f"At max concurrent positions ({config.MAX_CONCURRENT_POSITIONS})"
-            )
+            return f"At max concurrent positions ({config.MAX_CONCURRENT_POSITIONS})"
+
+        # Edge must be positive
+        if opp.edge <= 0:
+            return f"No positive edge (edge={opp.edge:.4f})"
 
         return ""
 
-    def _compute_confidence(self, signal: TradeSignal, market: MarketInfo) -> float:
+    def _compute_confidence(self, opp: MarketOpportunity, market: MarketInfo) -> float:
         """
-        Compute a 0.0–1.0 confidence score for the signal.
+        Compute a 0.0–1.0 confidence score for the opportunity.
 
-        Weights:
-          - Wallet win rate:       30%  (raw WR, already filtered >= MIN)
-          - Position conviction:   25%  (wallet's sizing relative to portfolio)
-          - Multi-wallet converge: 20%  (multiple wallets entering same market)
-          - Wallet weight/trust:   25%  (our confidence weight for this wallet)
+        Scoring factors:
+          - Edge magnitude:         35%  (bigger edge = higher score)
+          - Volume/liquidity:       25%  (more volume = more reliable price)
+          - Time remaining:         20%  (more time = more value in the bet)
+          - Opportunity type bonus: 20%  (longshots with big edge score higher)
         """
         score = 0.0
 
-        # Factor 1: Wallet win rate (0–0.30)
-        # Use the raw win rate directly — filter already ensures >= MIN_WALLET_WIN_RATE
-        score += min(signal.wallet_win_rate, 1.0) * 0.30
+        # Factor 1: Edge magnitude (0–0.35)
+        # For longshots: edge can be up to ~0.05 (NO side). Normalize over 0.06.
+        # For favorites: edge is typically 0.02-0.03. Normalize over 0.04.
+        if opp.opportunity_type == "longshot":
+            edge_normalized = min(opp.edge / 0.06, 1.0)
+        else:
+            edge_normalized = min(opp.edge / 0.04, 1.0)
+        score += edge_normalized * 0.35
 
-        # Factor 2: Position conviction (0–0.25)
-        # wallet_portfolio_pct > 10% is maximum conviction; scale linearly
-        conviction = min(signal.wallet_portfolio_pct / 0.10, 1.0)
-        score += conviction * 0.25
+        # Factor 2: Volume/liquidity (0–0.25)
+        # More volume = price is more informative and we can exit easier
+        # $2k minimum, normalize up to $50k
+        vol_normalized = min(market.volume_usdc / 50000.0, 1.0)
+        score += vol_normalized * 0.25
 
-        # Factor 3: Multi-wallet convergence (0–0.20)
-        convergence_count = self._count_convergent_signals(signal.market_id, signal.side)
-        convergence_score = min(convergence_count / 3.0, 1.0)
-        score += convergence_score * 0.20
+        # Factor 3: Time remaining (0–0.20)
+        # More time = the market hasn't been "picked over" as much
+        # Normalize: 1 hour to 7 days
+        if market.end_date_ts > 0:
+            time_remaining = max(market.end_date_ts - time.time(), 0)
+            time_normalized = min(time_remaining / (7 * 86400), 1.0)
+        else:
+            time_normalized = 0.5  # Unknown → assume moderate
+        score += time_normalized * 0.20
 
-        # Factor 4: Wallet weight/trust score (0–0.25)
-        score += signal.wallet_weight * 0.25
+        # Factor 4: Opportunity type bonus (0–0.20)
+        # Longshots with cheap YES prices have bigger structural edge
+        if opp.opportunity_type == "longshot":
+            # Cheaper longshots (5c vs 14c) have bigger bias
+            cheapness = 1.0 - (opp.current_price / (1.0 - config.LONGSHOT_MAX_PRICE))
+            # current_price is NO price (high), so invert
+            yes_price = 1.0 - opp.current_price
+            cheapness = max(0, 1.0 - (yes_price / config.LONGSHOT_MAX_PRICE))
+            type_score = min(cheapness + 0.3, 1.0)
+        else:
+            # Favorites above 80c have more reliable bias
+            type_score = min((market.yes_price - config.FAVORITE_MIN_PRICE) / 0.20, 1.0)
+        score += type_score * 0.20
 
         return round(min(score, 1.0), 4)
-
-    def _track_signal(self, signal: TradeSignal) -> None:
-        """Track a signal for multi-wallet convergence detection."""
-        now = time.time()
-        if signal.market_id not in self._recent_signals:
-            self._recent_signals[signal.market_id] = []
-
-        # Prune old signals
-        self._recent_signals[signal.market_id] = [
-            s for s in self._recent_signals[signal.market_id]
-            if now - s.timestamp < self._signal_window_seconds
-        ]
-        self._recent_signals[signal.market_id].append(signal)
-
-    def _count_convergent_signals(self, market_id: str, side: str) -> int:
-        """Count unique wallets that have signaled the same market AND side recently."""
-        signals = self._recent_signals.get(market_id, [])
-        unique_wallets = {s.wallet_address for s in signals if s.side == side}
-        return len(unique_wallets)
