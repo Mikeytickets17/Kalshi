@@ -1,13 +1,18 @@
 """
-Polymarket Latency Arbitrage Bot — Main loop.
+Polymarket Latency Arbitrage + Trump News Trading Bot.
 
-Replicates the 0x8dxd strategy:
-1. Stream BTC/ETH prices from Binance + Coinbase via WebSocket
-2. Compare CEX spot price to Polymarket contract implied prices
-3. When divergence > 3%, buy the correct side before market corrects
-4. Hold until contract resolves (typically 15 min or 1 hour)
+Two strategies running simultaneously:
 
-No forecasting. No sentiment. Pure speed + information advantage.
+1. LATENCY ARB (the 0x8dxd strategy):
+   Stream BTC/ETH from Binance/Coinbase, compare to Polymarket
+   contract prices, trade when divergence > 3%.
+
+2. TRUMP NEWS TRADING:
+   Monitor Truth Social every 3 seconds. When Trump posts about
+   crypto/tariffs/Fed, analyze with Claude API, execute BTC spot
+   trade on Binance within seconds. Hold for 15-30 minutes.
+
+Both strategies share the same risk manager and notifier.
 """
 
 import asyncio
@@ -19,6 +24,7 @@ import time
 from typing import Optional
 
 import config
+from exchange import BinanceExecutor, TradeResult
 from market_scanner import MarketOpportunity, MarketScanner
 from notifier import TelegramNotifier
 from polymarket import PolymarketClient, OrderResult, Position, Side
@@ -55,7 +61,7 @@ class LatencyArbBot:
         self._trade_count = 0
         self._win_count = 0
 
-        # Components
+        # Components — Latency Arb
         self._client = PolymarketClient()
         self._price_feed = PriceFeed()
         self._scanner = MarketScanner(self._price_feed)
@@ -63,6 +69,14 @@ class LatencyArbBot:
         self._sizer = PositionSizer(self._portfolio_value)
         self._risk_manager = RiskManager(self._portfolio_value)
         self._notifier = TelegramNotifier()
+
+        # Components — Trump News Trading
+        from trump_monitor import TrumpMonitor
+        from sentiment_analyzer import SentimentAnalyzer
+        self._trump_monitor = TrumpMonitor()
+        self._sentiment = SentimentAnalyzer()
+        self._exchange = BinanceExecutor()
+        self._trump_positions: list[dict] = []  # Track open Trump trades
 
         logger.info(
             "LatencyArbBot initialized: paper=%s portfolio=$%.2f",
@@ -72,8 +86,9 @@ class LatencyArbBot:
     async def run(self) -> None:
         self._running = True
         logger.info("=" * 64)
-        logger.info("Polymarket Latency Arbitrage Bot starting")
-        logger.info("Strategy: CEX price feed vs Polymarket contract lag")
+        logger.info("Polymarket Latency Arb + Trump News Bot starting")
+        logger.info("Strategy 1: CEX price feed vs Polymarket contract lag")
+        logger.info("Strategy 2: Trump Truth Social → Claude → Binance BTC")
         logger.info("Mode: %s", "PAPER" if self._paper_mode else "LIVE")
         logger.info("Portfolio: $%.2f", self._portfolio_value)
         logger.info("Edge threshold: %.1f%%", config.EDGE_THRESHOLD_PCT * 100)
@@ -83,10 +98,15 @@ class LatencyArbBot:
         logger.info("=" * 64)
 
         tasks = [
+            # Strategy 1: Latency Arbitrage
             asyncio.create_task(self._price_feed.start(), name="price_feed"),
             asyncio.create_task(self._scanner.start(), name="scanner"),
             asyncio.create_task(self._signal_processor(), name="signal_processor"),
             asyncio.create_task(self._exit_monitor(), name="exit_monitor"),
+            # Strategy 2: Trump News Trading
+            asyncio.create_task(self._trump_monitor.start(), name="trump_monitor"),
+            asyncio.create_task(self._trump_news_processor(), name="trump_processor"),
+            asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
         ]
 
         try:
@@ -137,12 +157,15 @@ class LatencyArbBot:
 
         await self._scanner.stop()
         await self._price_feed.stop()
+        await self._trump_monitor.stop()
+        await self._sentiment.close()
+        self._exchange.close()
         self._client.close()
         self._notifier.close()
 
         logger.info("Shutdown complete. Final portfolio: $%.2f", self._portfolio_value)
 
-    # --- Signal Processing ---
+    # --- Strategy 1: Latency Arb Signal Processing ---
 
     async def _signal_processor(self) -> None:
         """Process arbitrage signals — speed is everything."""
@@ -300,6 +323,128 @@ class LatencyArbBot:
             "WIN" if won else "LOSS", market_id, pnl,
             self._trade_count, wr, self._portfolio_value,
         )
+
+
+    # --- Strategy 2: Trump News Trading ---
+
+    async def _trump_news_processor(self) -> None:
+        """Process Trump posts → Claude sentiment → Binance execution."""
+        logger.info("Trump news processor started — monitoring Truth Social")
+        while self._running:
+            try:
+                try:
+                    post = await asyncio.wait_for(
+                        self._trump_monitor.post_queue.get(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                logger.info(
+                    "TRUMP POST: %s... [source=%s]",
+                    post.text[:80], post.source,
+                )
+
+                # Analyze sentiment with Claude (or rule-based fallback)
+                sentiment = await self._sentiment.analyze(post)
+
+                if not sentiment.is_market_relevant:
+                    logger.info("Post not market-relevant, skipping")
+                    continue
+
+                if sentiment.confidence < config.TRUMP_MIN_CONFIDENCE:
+                    logger.info(
+                        "Confidence %.2f below threshold %.2f, skipping",
+                        sentiment.confidence, config.TRUMP_MIN_CONFIDENCE,
+                    )
+                    continue
+
+                # Calculate trade size
+                size = min(
+                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * sentiment.confidence,
+                    config.TRUMP_MAX_TRADE_SIZE_USDC,
+                )
+                size = max(size, config.MIN_TRADE_SIZE_USDC)
+
+                if size > self._available_balance:
+                    logger.warning("Insufficient balance for Trump trade ($%.2f)", size)
+                    continue
+
+                # Execute on Binance
+                if sentiment.direction == "bullish":
+                    result = self._exchange.buy("BTC", size)
+                elif sentiment.direction == "bearish":
+                    result = self._exchange.sell("BTC", size)
+                else:
+                    continue
+
+                if result.success:
+                    self._trade_count += 1
+                    self._available_balance -= size
+                    self._trump_positions.append({
+                        "entry_time": time.time(),
+                        "side": result.side,
+                        "asset": result.asset,
+                        "entry_price": result.filled_price,
+                        "size_usd": result.filled_usd,
+                        "qty": result.filled_qty,
+                        "sentiment": sentiment.direction,
+                        "confidence": sentiment.confidence,
+                        "expected_move": sentiment.expected_move_pct,
+                        "post_text": post.text[:100],
+                        "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
+                    })
+
+                    logger.info(
+                        "TRUMP TRADE: %s BTC $%.2f @ $%.2f (conf=%.2f, expected=%.1f%%, exec=%dms)",
+                        result.side, result.filled_usd, result.filled_price,
+                        sentiment.confidence, sentiment.expected_move_pct * 100,
+                        result.execution_time_ms,
+                    )
+
+            except Exception as exc:
+                logger.error("Trump processor error: %s", exc, exc_info=True)
+
+    async def _trump_exit_monitor(self) -> None:
+        """Exit Trump trades after the hold period expires."""
+        logger.info("Trump exit monitor started (hold=%d min)", config.TRUMP_HOLD_MINUTES)
+        while self._running:
+            try:
+                for tp in list(self._trump_positions):
+                    if time.time() >= tp["hold_until"]:
+                        # Exit the position
+                        if tp["side"] == "BUY":
+                            result = self._exchange.sell(tp["asset"], tp["size_usd"])
+                        else:
+                            result = self._exchange.buy(tp["asset"], tp["size_usd"])
+
+                        if result.success:
+                            # Calculate PnL
+                            if tp["side"] == "BUY":
+                                pnl = (result.filled_price - tp["entry_price"]) * tp["qty"]
+                            else:
+                                pnl = (tp["entry_price"] - result.filled_price) * tp["qty"]
+
+                            won = pnl > 0
+                            if won:
+                                self._win_count += 1
+
+                            self._available_balance += tp["size_usd"] + pnl
+                            self._portfolio_value += pnl
+                            self._risk_manager.record_trade_result(pnl, source_wallet="trump_news")
+
+                            logger.info(
+                                "TRUMP EXIT: %s BTC pnl=$%+.2f (entry=$%.2f exit=$%.2f held=%dm)",
+                                "WIN" if won else "LOSS", pnl,
+                                tp["entry_price"], result.filled_price,
+                                config.TRUMP_HOLD_MINUTES,
+                            )
+
+                        self._trump_positions.remove(tp)
+
+                await asyncio.sleep(10)
+            except Exception as exc:
+                logger.error("Trump exit monitor error: %s", exc, exc_info=True)
+                await asyncio.sleep(5)
 
 
 async def main() -> None:

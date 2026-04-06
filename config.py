@@ -23,9 +23,23 @@ POLYMARKET_GAMMA_URL: str = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api
 POLYGON_RPC_WS: str = os.getenv("POLYGON_RPC_WS", "")
 ALCHEMY_API_KEY: str = os.getenv("ALCHEMY_API_KEY", "")
 
+# --- Binance Spot Trading ---
+BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
+BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
+
 # --- CEX Price Feeds ---
 BINANCE_WS_URL: str = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/ws")
 COINBASE_WS_URL: str = os.getenv("COINBASE_WS_URL", "wss://ws-feed.exchange.coinbase.com")
+
+# --- Trump Monitor ---
+TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECONDS", "3.0"))
+TRUMP_MIN_CONFIDENCE: float = float(os.getenv("TRUMP_MIN_CONFIDENCE", "0.50"))
+TRUMP_TRADE_SIZE_PCT: float = float(os.getenv("TRUMP_TRADE_SIZE_PCT", "0.05"))
+TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", "500.0"))
+TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "15"))
+
+# --- Claude API (for sentiment analysis) ---
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 # --- Edge Detection ---
 # Minimum divergence between CEX price and Polymarket implied price to trigger trade
