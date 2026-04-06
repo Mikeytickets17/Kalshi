@@ -27,7 +27,8 @@ import config
 from exchange import BinanceExecutor, TradeResult
 from market_scanner import MarketOpportunity, MarketScanner
 from notifier import TelegramNotifier
-from polymarket import PolymarketClient, OrderResult, Position, Side
+from kalshi_client import KalshiClient
+from polymarket import Position, Side, OrderResult
 from position_sizer import PositionSizer
 from price_feed import PriceFeed
 from risk_manager import RiskManager
@@ -61,11 +62,11 @@ class LatencyArbBot:
         self._trade_count = 0
         self._win_count = 0
 
-        # Components — Latency Arb
-        self._client = PolymarketClient()
+        # Components — Latency Arb (Kalshi)
+        self._kalshi = KalshiClient()
         self._price_feed = PriceFeed()
         self._scanner = MarketScanner(self._price_feed)
-        self._evaluator = SignalEvaluator(self._client, self._active_positions)
+        self._evaluator = SignalEvaluator(self._kalshi, self._active_positions)
         self._sizer = PositionSizer(self._portfolio_value)
         self._risk_manager = RiskManager(self._portfolio_value)
         self._notifier = TelegramNotifier()
@@ -87,7 +88,7 @@ class LatencyArbBot:
         self._running = True
         logger.info("=" * 64)
         logger.info("Polymarket Latency Arb + Trump News Bot starting")
-        logger.info("Strategy 1: CEX price feed vs Polymarket contract lag")
+        logger.info("Strategy 1: CEX price feed vs Kalshi crypto contracts")
         logger.info("Strategy 2: Trump Truth Social → Claude → Binance BTC")
         logger.info("Mode: %s", "PAPER" if self._paper_mode else "LIVE")
         logger.info("Portfolio: $%.2f", self._portfolio_value)
@@ -128,7 +129,7 @@ class LatencyArbBot:
         self._running = False
         logger.info("Shutting down: %s", reason)
 
-        self._client.cancel_all_orders()
+        self._kalshi.cancel_all()
 
         if self._active_positions:
             logger.info("Closing %d positions on shutdown...", len(self._active_positions))
@@ -160,7 +161,7 @@ class LatencyArbBot:
         await self._trump_monitor.stop()
         await self._sentiment.close()
         self._exchange.close()
-        self._client.close()
+        self._kalshi.close()
         self._notifier.close()
 
         logger.info("Shutdown complete. Final portfolio: $%.2f", self._portfolio_value)
@@ -215,24 +216,24 @@ class LatencyArbBot:
         opp = evaluation.signal
         ticker = opp.ticker
 
-        result: OrderResult = self._client.place_order(
-            token_id=opp.market_id,
-            side=evaluation.side,
-            size_usdc=size_usdc,
+        kalshi_result = self._kalshi.place_order(
+            ticker=opp.market_id,
+            side=evaluation.side.value,
+            size_usd=size_usdc,
             price=evaluation.target_price,
         )
 
-        if not result.success:
-            logger.error("Order failed: %s", result.error)
+        if not kalshi_result.success:
+            logger.error("Kalshi order failed: %s", kalshi_result.error)
             return
 
         position = Position(
             market_id=opp.market_id,
             condition_id=ticker,
             side=evaluation.side,
-            size=result.filled_size or size_usdc,
-            avg_price=result.filled_price or evaluation.target_price,
-            current_price=result.filled_price or evaluation.target_price,
+            size=kalshi_result.filled_size or size_usdc,
+            avg_price=kalshi_result.filled_price or evaluation.target_price,
+            current_price=kalshi_result.filled_price or evaluation.target_price,
             source_wallet=opp.asset,
             category="crypto",
         )
@@ -241,13 +242,13 @@ class LatencyArbBot:
         self._trade_count += 1
 
         self._notifier.notify_trade_opened(
-            evaluation, size_usdc, result.filled_price or evaluation.target_price
+            evaluation, size_usdc, kalshi_result.filled_price or evaluation.target_price
         )
 
         logger.info(
             "TRADED: %s %s $%.2f @ %.4f edge=%.1f%% (pos %d/%d)",
             evaluation.side.value, ticker, size_usdc,
-            result.filled_price or evaluation.target_price,
+            kalshi_result.filled_price or evaluation.target_price,
             opp.edge * 100,
             len(self._active_positions), config.MAX_CONCURRENT_POSITIONS,
         )
@@ -477,9 +478,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    print("Starting Polymarket Latency Arbitrage Bot...")
+    print("Starting Kalshi Arb + Trump News Trading Bot...")
     print(f"Mode: {'PAPER' if config.PAPER_MODE else 'LIVE'}")
-    print(f"Strategy: CEX price vs Polymarket contract lag")
+    print(f"Strategy 1: CEX price vs Kalshi crypto contracts")
+    print(f"Strategy 2: Trump Truth Social → Claude → Binance BTC")
     print(f"Edge threshold: {config.EDGE_THRESHOLD_PCT*100:.1f}%")
+    print(f"Kalshi: {'DEMO' if config.KALSHI_USE_DEMO else 'PRODUCTION'}")
     print(f"Paper balance: ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
     asyncio.run(main())
