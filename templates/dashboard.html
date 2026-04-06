@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalshi Longshot Bias Bot</title>
+<style>
+  :root {
+    --bg: #0a0e17;
+    --card: #111827;
+    --border: #1e293b;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --green: #22c55e;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --amber: #f59e0b;
+    --purple: #a855f7;
+    --cyan: #06b6d4;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .header {
+    background: linear-gradient(135deg, #111827 0%, #1a1f35 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--cyan), var(--blue));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+  .header-right { display: flex; gap: 16px; align-items: center; }
+  .badge {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-paper { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
+  .badge-demo { background: rgba(139,92,246,0.15); color: var(--purple); border: 1px solid rgba(139,92,246,0.3); }
+  .badge-live { background: rgba(34,197,94,0.15); color: var(--green); }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+  /* Top stats row */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .stat-value { font-size: 28px; font-weight: 700; letter-spacing: -1px; }
+  .stat-sub { font-size: 12px; margin-top: 4px; }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  .blue { color: var(--blue); }
+
+  /* Main grid */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .panel-body { padding: 16px 20px; }
+  .panel-full { grid-column: 1 / -1; }
+
+  /* Chart */
+  .chart-container { height: 180px; display: flex; align-items: flex-end; gap: 1px; padding: 10px 0; }
+  .chart-bar {
+    flex: 1;
+    background: var(--blue);
+    border-radius: 2px 2px 0 0;
+    min-width: 1px;
+    transition: background 0.2s;
+    position: relative;
+  }
+  .chart-bar:hover { background: var(--cyan); }
+  .chart-bar.negative { background: var(--red); opacity: 0.6; }
+  .chart-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); padding-top: 4px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(59,130,246,0.04); }
+
+  .side-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .side-yes { background: rgba(34,197,94,0.15); color: var(--green); }
+  .side-no { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  .type-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .type-longshot { background: rgba(168,85,247,0.15); color: var(--purple); }
+  .type-favorite { background: rgba(6,182,212,0.15); color: var(--cyan); }
+
+  .action-traded { color: var(--green); font-weight: 600; }
+  .action-rejected { color: var(--muted); }
+
+  /* Risk meters */
+  .risk-meters { display: flex; flex-direction: column; gap: 16px; }
+  .risk-item { }
+  .risk-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+  .risk-bar-bg { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .risk-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .risk-bar-ok { background: var(--green); }
+  .risk-bar-warn { background: var(--amber); }
+  .risk-bar-danger { background: var(--red); }
+
+  /* Performance cards */
+  .perf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .perf-card {
+    background: rgba(30,41,59,0.4);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .perf-type { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .perf-stats { display: flex; gap: 16px; }
+  .perf-stat { }
+  .perf-stat-val { font-size: 20px; font-weight: 700; }
+  .perf-stat-label { font-size: 10px; color: var(--muted); }
+
+  /* Category exposure */
+  .cat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+  .cat-label { width: 90px; color: var(--muted); }
+  .cat-bar-bg { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .cat-bar { height: 100%; border-radius: 4px; background: var(--blue); }
+  .cat-val { width: 40px; text-align: right; font-weight: 600; font-size: 11px; }
+
+  .footer {
+    text-align: center;
+    padding: 24px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pnl-pos { color: var(--green); }
+  .pnl-neg { color: var(--red); }
+
+  .score-bar {
+    display: inline-block;
+    width: 50px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .score-fill {
+    height: 100%;
+    border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Kalshi Longshot Bias Bot</h1>
+  <div class="header-right">
+    <span class="badge badge-paper" id="mode-badge">PAPER</span>
+    <span class="badge badge-demo" id="env-badge">DEMO</span>
+    <span style="font-size:12px;color:var(--muted)"><span class="pulse"></span><span id="uptime">--</span></span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Top Stats -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Portfolio Value</div>
+      <div class="stat-value" id="portfolio-value">--</div>
+      <div class="stat-sub green" id="portfolio-pnl">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value blue" id="win-rate">--</div>
+      <div class="stat-sub" style="color:var(--muted)" id="win-loss">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Unrealized P&L</div>
+      <div class="stat-value" id="unrealized-pnl">--</div>
+      <div class="stat-sub" style="color:var(--muted)" id="exposure">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Realized P&L</div>
+      <div class="stat-value" id="realized-pnl">--</div>
+      <div class="stat-sub" style="color:var(--muted)" id="total-trades">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Max Drawdown</div>
+      <div class="stat-value" id="drawdown">--</div>
+      <div class="stat-sub" style="color:var(--muted)" id="last-scan">--</div>
+    </div>
+  </div>
+
+  <!-- Equity Chart -->
+  <div class="panel panel-full" style="margin-bottom:24px">
+    <div class="panel-header">
+      <span>Equity Curve (7 Days)</span>
+      <span style="font-size:12px;color:var(--muted)" id="peak-label">--</span>
+    </div>
+    <div class="panel-body">
+      <div class="chart-container" id="equity-chart"></div>
+      <div class="chart-labels"><span>7 days ago</span><span>Now</span></div>
+    </div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="main-grid">
+
+    <!-- Active Positions -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Active Positions</span>
+        <span style="font-size:12px;color:var(--muted)" id="positions-count">--</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Market</th><th>Side</th><th>Type</th><th>Entry</th><th>Now</th><th>Size</th><th>P&L</th></tr></thead>
+          <tbody id="positions-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Risk Management -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Risk Management</span>
+        <span class="badge badge-live" id="risk-status">ACTIVE</span>
+      </div>
+      <div class="panel-body risk-meters" id="risk-meters">
+      </div>
+    </div>
+
+    <!-- Recent Signals -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Recent Signals</span>
+        <span style="font-size:12px;color:var(--muted)">Last scan: <span id="scan-time">--</span></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Type</th><th>YES Price</th><th>Edge</th><th>Score</th><th>Action</th></tr></thead>
+          <tbody id="signals-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Performance by Type -->
+    <div class="panel">
+      <div class="panel-header"><span>Performance by Strategy</span></div>
+      <div class="panel-body">
+        <div class="perf-row" id="perf-cards"></div>
+        <div style="margin-top:20px">
+          <div class="panel-header" style="padding:0 0 12px 0;border:none;font-size:13px">Category Exposure</div>
+          <div id="category-bars"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Closed Trades -->
+    <div class="panel panel-full">
+      <div class="panel-header"><span>Recent Closed Trades</span></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Closed</th><th>Market</th><th>Side</th><th>Type</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Result</th></tr></thead>
+          <tbody id="closed-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<div class="footer">
+  Kalshi Longshot Bias Bot &mdash; Dashboard &mdash; Data refreshes every 5 seconds
+</div>
+
+<script>
+function $(id) { return document.getElementById(id); }
+function fmt(n) { return n >= 0 ? '+$' + n.toFixed(2) : '-$' + Math.abs(n).toFixed(2); }
+function pnlClass(n) { return n >= 0 ? 'pnl-pos' : 'pnl-neg'; }
+
+function scoreColor(s) {
+  if (s >= 0.65) return 'var(--green)';
+  if (s >= 0.55) return 'var(--amber)';
+  return 'var(--red)';
+}
+
+function render(data) {
+  // Stats
+  $('portfolio-value').textContent = '$' + data.portfolio_value.toLocaleString(undefined, {minimumFractionDigits:2});
+  $('portfolio-pnl').textContent = fmt(data.total_pnl) + ' (' + data.roi_pct.toFixed(2) + '%)';
+  $('portfolio-pnl').className = 'stat-sub ' + (data.total_pnl >= 0 ? 'green' : 'red');
+  $('win-rate').textContent = data.win_rate + '%';
+  $('win-loss').textContent = data.wins + 'W / ' + data.losses + 'L';
+  $('unrealized-pnl').textContent = fmt(data.unrealized_pnl);
+  $('unrealized-pnl').className = 'stat-value ' + (data.unrealized_pnl >= 0 ? 'green' : 'red');
+  $('exposure').textContent = '$' + data.total_exposure.toFixed(2) + ' exposed';
+  $('realized-pnl').textContent = fmt(data.realized_pnl);
+  $('realized-pnl').className = 'stat-value ' + (data.realized_pnl >= 0 ? 'green' : 'red');
+  $('total-trades').textContent = data.total_trades + ' closed trades';
+  $('drawdown').textContent = data.risk.drawdown_pct.toFixed(2) + '%';
+  $('drawdown').className = 'stat-value ' + (data.risk.drawdown_pct > 15 ? 'red' : data.risk.drawdown_pct > 8 ? 'amber' : 'green');
+  $('last-scan').textContent = 'Last scan: ' + data.last_scan;
+  $('uptime').textContent = data.uptime;
+  $('peak-label').textContent = 'Peak: $' + data.peak_value.toLocaleString(undefined, {minimumFractionDigits:2});
+  $('positions-count').textContent = data.positions.length + '/' + data.risk.positions_max;
+  $('scan-time').textContent = data.last_scan;
+
+  // Equity chart
+  const chart = $('equity-chart');
+  const eq = data.equity_curve;
+  const mn = Math.min(...eq);
+  const mx = Math.max(...eq);
+  const range = mx - mn || 1;
+  chart.innerHTML = eq.map(v => {
+    const h = Math.max(2, ((v - mn) / range) * 160);
+    const col = v >= data.initial_balance ? 'var(--blue)' : 'var(--red)';
+    return '<div class="chart-bar" style="height:' + h + 'px;background:' + col + '" title="$' + v.toFixed(2) + '"></div>';
+  }).join('');
+
+  // Positions table
+  $('positions-table').innerHTML = data.positions.map(p =>
+    '<tr>' +
+    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + p.title.substring(0,45) + '</div></td>' +
+    '<td><span class="side-badge side-' + p.side.toLowerCase() + '">' + p.side + '</span></td>' +
+    '<td><span class="type-badge type-' + p.type + '">' + p.type + '</span></td>' +
+    '<td>' + p.entry_price.toFixed(2) + '</td>' +
+    '<td>' + p.current_price.toFixed(2) + '</td>' +
+    '<td>$' + p.size_usd.toFixed(0) + '</td>' +
+    '<td class="' + pnlClass(p.pnl) + '">' + fmt(p.pnl) + '</td>' +
+    '</tr>'
+  ).join('');
+
+  // Signals table
+  $('signals-table').innerHTML = data.signals.map(s =>
+    '<tr>' +
+    '<td style="color:var(--muted);white-space:nowrap">' + s.time + '</td>' +
+    '<td style="max-width:180px">' + s.ticker + '</td>' +
+    '<td><span class="side-badge side-' + s.side.toLowerCase() + '">' + s.side + '</span></td>' +
+    '<td><span class="type-badge type-' + s.type + '">' + s.type + '</span></td>' +
+    '<td>' + (s.yes_price * 100).toFixed(0) + 'c</td>' +
+    '<td>' + (s.edge * 100).toFixed(1) + '%</td>' +
+    '<td><span class="score-bar"><span class="score-fill" style="width:' + (s.score*100) + '%;background:' + scoreColor(s.score) + '"></span></span>' + s.score.toFixed(2) + '</td>' +
+    '<td class="action-' + s.action.toLowerCase() + '">' + s.action + '</td>' +
+    '</tr>'
+  ).join('');
+
+  // Closed trades table
+  $('closed-table').innerHTML = data.closed_trades.map(c =>
+    '<tr>' +
+    '<td style="color:var(--muted);white-space:nowrap">' + c.closed + '</td>' +
+    '<td>' + c.ticker + '</td>' +
+    '<td><span class="side-badge side-' + c.side.toLowerCase() + '">' + c.side + '</span></td>' +
+    '<td><span class="type-badge type-' + c.type + '">' + c.type + '</span></td>' +
+    '<td>' + c.entry.toFixed(2) + '</td>' +
+    '<td>' + c.exit.toFixed(2) + '</td>' +
+    '<td class="' + pnlClass(c.pnl) + '">' + fmt(c.pnl) + '</td>' +
+    '<td><span class="side-badge ' + (c.result === 'win' ? 'side-yes' : 'side-no') + '">' + c.result.toUpperCase() + '</span></td>' +
+    '</tr>'
+  ).join('');
+
+  // Risk meters
+  const risks = [
+    {label: 'Daily P&L', val: Math.abs(data.risk.daily_pnl_pct), max: data.risk.daily_limit, display: data.risk.daily_pnl_pct.toFixed(2) + '% / -' + data.risk.daily_limit + '%'},
+    {label: 'Drawdown', val: data.risk.drawdown_pct, max: data.risk.drawdown_limit, display: data.risk.drawdown_pct.toFixed(2) + '% / ' + data.risk.drawdown_limit + '%'},
+    {label: 'Consecutive Losses', val: data.risk.consecutive_losses, max: data.risk.max_consec, display: data.risk.consecutive_losses + ' / ' + data.risk.max_consec},
+    {label: 'Open Positions', val: data.risk.positions_used, max: data.risk.positions_max, display: data.risk.positions_used + ' / ' + data.risk.positions_max},
+  ];
+  $('risk-meters').innerHTML = risks.map(r => {
+    const pct = (r.val / r.max) * 100;
+    const cls = pct > 80 ? 'risk-bar-danger' : pct > 50 ? 'risk-bar-warn' : 'risk-bar-ok';
+    return '<div class="risk-item"><div class="risk-label"><span>' + r.label + '</span><span style="color:var(--muted)">' + r.display + '</span></div><div class="risk-bar-bg"><div class="risk-bar-fill ' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div></div>';
+  }).join('');
+
+  // Performance cards
+  const types = [
+    {key: 'longshot', label: 'Longshot Bias', color: 'var(--purple)'},
+    {key: 'favorite', label: 'Favorite Bias', color: 'var(--cyan)'},
+  ];
+  $('perf-cards').innerHTML = types.map(t => {
+    const d = data.performance[t.key];
+    const wr = d.trades > 0 ? (d.wins / d.trades * 100).toFixed(0) : 0;
+    return '<div class="perf-card"><div class="perf-type" style="color:' + t.color + '">' + t.label + '</div><div class="perf-stats">' +
+      '<div class="perf-stat"><div class="perf-stat-val">' + wr + '%</div><div class="perf-stat-label">Win Rate</div></div>' +
+      '<div class="perf-stat"><div class="perf-stat-val">' + d.trades + '</div><div class="perf-stat-label">Trades</div></div>' +
+      '<div class="perf-stat"><div class="perf-stat-val ' + pnlClass(d.pnl) + '">' + fmt(d.pnl) + '</div><div class="perf-stat-label">P&L</div></div>' +
+    '</div></div>';
+  }).join('');
+
+  // Category exposure
+  const cats = data.risk.category_exposure;
+  $('category-bars').innerHTML = Object.entries(cats).map(([k, v]) =>
+    '<div class="cat-row"><span class="cat-label">' + k + '</span><div class="cat-bar-bg"><div class="cat-bar" style="width:' + Math.min(v / 30 * 100, 100) + '%;background:' + (v > 25 ? 'var(--amber)' : 'var(--blue)') + '"></div></div><span class="cat-val">' + v.toFixed(1) + '%</span></div>'
+  ).join('');
+}
+
+// Initial load + auto-refresh
+function refresh() {
+  fetch('/api/state').then(r => r.json()).then(render).catch(console.error);
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
