@@ -1,11 +1,11 @@
 """
-Signal evaluator module — Kalshi longshot bias strategy.
+Signal evaluator — multi-strategy scoring for Kalshi markets.
 
-Evaluates market opportunities from the scanner based on:
-  - Longshot bias: contracts under 15c are overpriced by ~40%
-  - Favorite bias: contracts over 70c are underpriced by ~2-3%
+Evaluates 5 opportunity types with strategy-specific scoring:
+  - Longshot fade, favorite lean, closing convergence,
+    multi-contract arb, stale midrange
 
-Scores each opportunity 0.0 to 1.0 and passes through those above threshold.
+Lower threshold (0.45) to let more trades through — volume is the goal.
 """
 
 import logging
@@ -22,15 +22,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvaluationResult:
-    """
-    Result of evaluating a market opportunity.
-
-    Maintains the same interface as the Polymarket version so that
-    position_sizer.py and notifier.py work without modification.
-    """
+    """Result of evaluating a market opportunity."""
     should_copy: bool
     confidence_score: float
-    signal: MarketOpportunity       # position_sizer reads signal.wallet_weight, etc.
+    signal: MarketOpportunity
     market_info: Optional[MarketInfo]
     rejection_reason: str = ""
     side: Side = Side.YES
@@ -38,7 +33,7 @@ class EvaluationResult:
 
 
 class SignalEvaluator:
-    """Evaluates market opportunities using longshot bias edge calculations."""
+    """Multi-strategy signal evaluator."""
 
     def __init__(
         self,
@@ -50,12 +45,10 @@ class SignalEvaluator:
 
     def evaluate(self, opportunity: MarketOpportunity) -> EvaluationResult:
         """Evaluate a market opportunity and decide whether to trade."""
-        # Fetch fresh market info if we have a live connection
         market_info: Optional[MarketInfo] = None
         if self._client.is_connected:
             market_info = self._client.get_market(opportunity.ticker)
 
-        # In paper mode, create synthetic MarketInfo from the opportunity
         if market_info is None:
             market_info = MarketInfo(
                 market_id=opportunity.market_id,
@@ -71,121 +64,149 @@ class SignalEvaluator:
                 resolved=False,
             )
 
-        # Run filters
         rejection = self._apply_filters(opportunity, market_info)
         if rejection:
-            logger.info(
-                "Opportunity rejected: %s reason=%s", opportunity.ticker, rejection,
-            )
             return EvaluationResult(
-                should_copy=False,
-                confidence_score=0.0,
-                signal=opportunity,
-                market_info=market_info,
+                should_copy=False, confidence_score=0.0,
+                signal=opportunity, market_info=market_info,
                 rejection_reason=rejection,
             )
 
-        # Compute confidence score
         score = self._compute_confidence(opportunity, market_info)
         side = Side.NO if opportunity.side == "NO" else Side.YES
         target_price = opportunity.current_price
 
         should_trade = score >= config.SIGNAL_THRESHOLD
-        if not should_trade:
-            logger.info(
-                "Opportunity below threshold: %s score=%.3f threshold=%.3f",
-                opportunity.ticker, score, config.SIGNAL_THRESHOLD,
-            )
 
         return EvaluationResult(
-            should_copy=should_trade,
-            confidence_score=score,
-            signal=opportunity,
-            market_info=market_info,
-            side=side,
-            target_price=target_price,
+            should_copy=should_trade, confidence_score=score,
+            signal=opportunity, market_info=market_info,
+            side=side, target_price=target_price,
         )
 
     def _apply_filters(self, opp: MarketOpportunity, market: MarketInfo) -> str:
-        """Apply all filters. Returns rejection reason or empty string."""
         if market.resolved:
-            return "Market already resolved"
+            return "Market resolved"
         if not market.active:
             return "Market not active"
-
-        # Volume filter
         if market.volume_usdc < config.MIN_MARKET_VOLUME:
-            return f"Volume ${market.volume_usdc:.0f} below minimum ${config.MIN_MARKET_VOLUME:.0f}"
-
-        # Time remaining
+            return f"Volume ${market.volume_usdc:.0f} < ${config.MIN_MARKET_VOLUME:.0f}"
         if market.end_date_ts > 0:
-            time_remaining = market.end_date_ts - time.time()
-            if time_remaining < config.MIN_TIME_REMAINING_SECONDS:
-                return f"Time remaining {time_remaining:.0f}s below minimum {config.MIN_TIME_REMAINING_SECONDS}s"
+            remaining = market.end_date_ts - time.time()
+            if remaining < config.MIN_TIME_REMAINING_SECONDS:
+                return f"Closing in {remaining:.0f}s"
 
-        # No duplicate positions
-        if opp.market_id in self._active_positions:
-            return "Already have position in this market"
+        # Strip suffixes like "-closing", "-arb", "-stale" for dedup
+        base_id = opp.market_id.split("-closing")[0].split("-arb")[0].split("-stale")[0]
+        if base_id in self._active_positions:
+            return "Already positioned"
 
-        # Max concurrent positions
         if len(self._active_positions) >= config.MAX_CONCURRENT_POSITIONS:
-            return f"At max concurrent positions ({config.MAX_CONCURRENT_POSITIONS})"
-
-        # Edge must be positive
+            return f"At max positions ({config.MAX_CONCURRENT_POSITIONS})"
         if opp.edge <= 0:
-            return f"No positive edge (edge={opp.edge:.4f})"
-
+            return f"No edge ({opp.edge:.4f})"
         return ""
 
     def _compute_confidence(self, opp: MarketOpportunity, market: MarketInfo) -> float:
         """
-        Compute a 0.0–1.0 confidence score for the opportunity.
+        Strategy-specific confidence scoring.
 
-        Scoring factors:
-          - Edge magnitude:         35%  (bigger edge = higher score)
-          - Volume/liquidity:       25%  (more volume = more reliable price)
-          - Time remaining:         20%  (more time = more value in the bet)
-          - Opportunity type bonus: 20%  (longshots with big edge score higher)
+        Each strategy has its own scoring weights because the edge
+        characteristics are different.
         """
+        otype = opp.opportunity_type
+
+        if otype == "longshot":
+            return self._score_longshot(opp, market)
+        elif otype == "favorite":
+            return self._score_favorite(opp, market)
+        elif otype == "closing":
+            return self._score_closing(opp, market)
+        elif otype == "multi_arb":
+            return self._score_multi_arb(opp, market)
+        elif otype == "stale":
+            return self._score_stale(opp, market)
+        else:
+            return self._score_generic(opp, market)
+
+    def _score_longshot(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Longshots: edge magnitude matters most."""
         score = 0.0
-
-        # Factor 1: Edge magnitude (0–0.35)
-        # For longshots: edge can be up to ~0.05 (NO side). Normalize over 0.06.
-        # For favorites: edge is typically 0.02-0.03. Normalize over 0.04.
-        if opp.opportunity_type == "longshot":
-            edge_normalized = min(opp.edge / 0.06, 1.0)
-        else:
-            edge_normalized = min(opp.edge / 0.04, 1.0)
-        score += edge_normalized * 0.35
-
-        # Factor 2: Volume/liquidity (0–0.25)
-        # More volume = price is more informative and we can exit easier
-        # $2k minimum, normalize up to $50k
-        vol_normalized = min(market.volume_usdc / 50000.0, 1.0)
-        score += vol_normalized * 0.25
-
-        # Factor 3: Time remaining (0–0.20)
-        # More time = the market hasn't been "picked over" as much
-        # Normalize: 1 hour to 7 days
-        if market.end_date_ts > 0:
-            time_remaining = max(market.end_date_ts - time.time(), 0)
-            time_normalized = min(time_remaining / (7 * 86400), 1.0)
-        else:
-            time_normalized = 0.5  # Unknown → assume moderate
-        score += time_normalized * 0.20
-
-        # Factor 4: Opportunity type bonus (0–0.20)
-        # Longshots with cheap YES prices have bigger structural edge
-        if opp.opportunity_type == "longshot":
-            # Cheaper longshots (5c vs 14c) have bigger bias
-            cheapness = 1.0 - (opp.current_price / (1.0 - config.LONGSHOT_MAX_PRICE))
-            # current_price is NO price (high), so invert
-            yes_price = 1.0 - opp.current_price
-            cheapness = max(0, 1.0 - (yes_price / config.LONGSHOT_MAX_PRICE))
-            type_score = min(cheapness + 0.3, 1.0)
-        else:
-            # Favorites above 80c have more reliable bias
-            type_score = min((market.yes_price - config.FAVORITE_MIN_PRICE) / 0.20, 1.0)
-        score += type_score * 0.20
-
+        # Edge (40%): bigger edge = better. Normalize over 0.08 (max for cheap longshots)
+        score += min(opp.edge / 0.08, 1.0) * 0.40
+        # Volume (25%): normalize $500 to $30k
+        score += min(market.volume_usdc / 30000, 1.0) * 0.25
+        # Cheapness (20%): cheaper longshots have bigger structural bias
+        yes = 1.0 - opp.current_price  # YES price
+        cheapness = max(0, 1.0 - (yes / config.LONGSHOT_MAX_PRICE))
+        score += cheapness * 0.20
+        # Time (15%): more time = haven't been picked over
+        score += self._time_factor(market) * 0.15
         return round(min(score, 1.0), 4)
+
+    def _score_favorite(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Favorites: volume and price level matter most."""
+        score = 0.0
+        # Edge (30%)
+        score += min(opp.edge / 0.05, 1.0) * 0.30
+        # Volume (30%): higher volume = more reliable price discovery
+        score += min(market.volume_usdc / 30000, 1.0) * 0.30
+        # Strength (20%): stronger favorites (90c+) have more reliable bias
+        strength = min((market.yes_price - config.FAVORITE_MIN_PRICE) / 0.25, 1.0)
+        score += strength * 0.20
+        # Time (20%)
+        score += self._time_factor(market) * 0.20
+        return round(min(score, 1.0), 4)
+
+    def _score_closing(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Closing drift: urgency and edge magnitude matter."""
+        score = 0.0
+        # Edge (45%): drift strength is the signal
+        score += min(opp.edge / 0.06, 1.0) * 0.45
+        # Volume (25%)
+        score += min(market.volume_usdc / 20000, 1.0) * 0.25
+        # Urgency (30%): closer to close = stronger signal
+        if market.end_date_ts > 0:
+            hours_left = max((market.end_date_ts - time.time()) / 3600, 0.1)
+            urgency = min(3.0 / hours_left, 1.0)
+        else:
+            urgency = 0.3
+        score += urgency * 0.30
+        return round(min(score, 1.0), 4)
+
+    def _score_multi_arb(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Multi-contract arb: edge is structural, high confidence."""
+        score = 0.0
+        # Edge (50%): arb edge is the most reliable
+        score += min(opp.edge / 0.05, 1.0) * 0.50
+        # Volume (30%)
+        score += min(market.volume_usdc / 15000, 1.0) * 0.30
+        # Base bonus (20%): arb opportunities are inherently higher quality
+        score += 0.20
+        return round(min(score, 1.0), 4)
+
+    def _score_stale(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Stale midrange: lowest confidence, smallest sizing."""
+        score = 0.0
+        # Edge (35%)
+        score += min(opp.edge / 0.03, 1.0) * 0.35
+        # Staleness indicator (35%): lower volume = more stale = bigger opportunity
+        staleness = max(0, 1.0 - (market.volume_usdc / 2000))
+        score += staleness * 0.35
+        # Time (30%)
+        score += self._time_factor(market) * 0.30
+        return round(min(score, 0.75), 4)  # Cap at 0.75 — never max confidence on stale
+
+    def _score_generic(self, opp: MarketOpportunity, market: MarketInfo) -> float:
+        """Fallback scoring."""
+        score = min(opp.edge / 0.05, 1.0) * 0.50
+        score += min(market.volume_usdc / 20000, 1.0) * 0.30
+        score += self._time_factor(market) * 0.20
+        return round(min(score, 1.0), 4)
+
+    def _time_factor(self, market: MarketInfo) -> float:
+        """Normalized time remaining factor (0 to 1)."""
+        if market.end_date_ts <= 0:
+            return 0.5
+        remaining = max(market.end_date_ts - time.time(), 0)
+        return min(remaining / (7 * 86400), 1.0)
