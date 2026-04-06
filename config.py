@@ -1,7 +1,8 @@
 """
-Configuration for the Kalshi longshot bias trading bot.
+Configuration for the Polymarket latency arbitrage bot.
 
-All parameters are loaded from environment variables with sensible defaults.
+Replicates the 0x8dxd strategy: monitor CEX price feeds (Binance/Coinbase)
+and trade Polymarket contracts when the implied price diverges from spot.
 """
 
 import os
@@ -12,45 +13,53 @@ load_dotenv()
 # --- Mode ---
 PAPER_MODE: bool = os.getenv("PAPER_MODE", "true").lower() == "true"
 
-# --- Kalshi API ---
-KALSHI_API_KEY_ID: str = os.getenv("KALSHI_API_KEY_ID", "")
-KALSHI_PRIVATE_KEY_PATH: str = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
-KALSHI_USE_DEMO: bool = os.getenv("KALSHI_USE_DEMO", "true").lower() == "true"
+# --- Polymarket API ---
+POLY_API_KEY: str = os.getenv("POLY_API_KEY", "")
+POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
+POLYMARKET_CLOB_URL: str = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
+POLYMARKET_GAMMA_URL: str = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
 
-# --- Market Scanning ---
-SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "120"))
-MIN_MARKET_VOLUME: float = float(os.getenv("MIN_MARKET_VOLUME", "5000"))
+# --- Polygon RPC ---
+POLYGON_RPC_WS: str = os.getenv("POLYGON_RPC_WS", "")
+ALCHEMY_API_KEY: str = os.getenv("ALCHEMY_API_KEY", "")
 
-# Longshot fade: YES contracts below this price, ANY category
-# Only trade longshots cheap enough that the bias overcomes fees
-LONGSHOT_MAX_PRICE: float = float(os.getenv("LONGSHOT_MAX_PRICE", "0.12"))
-LONGSHOT_MIN_EDGE: float = float(os.getenv("LONGSHOT_MIN_EDGE", "0.03"))
+# --- CEX Price Feeds ---
+BINANCE_WS_URL: str = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/ws")
+COINBASE_WS_URL: str = os.getenv("COINBASE_WS_URL", "wss://ws-feed.exchange.coinbase.com")
 
-# Favorite lean: YES contracts above this price, ANY category
-FAVORITE_MIN_PRICE: float = float(os.getenv("FAVORITE_MIN_PRICE", "0.75"))
-FAVORITE_MIN_EDGE: float = float(os.getenv("FAVORITE_MIN_EDGE", "0.02"))
+# --- Edge Detection ---
+# Minimum divergence between CEX price and Polymarket implied price to trigger trade
+EDGE_THRESHOLD_PCT: float = float(os.getenv("EDGE_THRESHOLD_PCT", "0.03"))
+# Maximum divergence — too large means something is wrong, don't trade
+MAX_EDGE_PCT: float = float(os.getenv("MAX_EDGE_PCT", "0.15"))
+# How many milliseconds of CEX data to confirm before acting
+CONFIRMATION_WINDOW_MS: int = int(os.getenv("CONFIRMATION_WINDOW_MS", "500"))
+# Minimum contract time remaining (only trade 15-min and 1-hour contracts)
+MIN_CONTRACT_DURATION_SECONDS: int = int(os.getenv("MIN_CONTRACT_DURATION_SECONDS", "60"))
 
-# --- Signal Evaluation ---
-SIGNAL_THRESHOLD: float = float(os.getenv("SIGNAL_THRESHOLD", "0.50"))
-MIN_TIME_REMAINING_SECONDS: int = int(os.getenv("MIN_TIME_REMAINING_SECONDS", "600"))
+# --- Target Markets ---
+# Polymarket BTC short-duration contract series tickers
+TARGET_ASSETS: list[str] = os.getenv("TARGET_ASSETS", "BTC,ETH").split(",")
+# Contract durations to target (in minutes)
+TARGET_DURATIONS: list[int] = [int(x) for x in os.getenv("TARGET_DURATIONS", "15,60").split(",")]
 
 # --- Position Sizing ---
-BASE_COPY_PCT: float = float(os.getenv("BASE_COPY_PCT", "0.03"))
+BASE_COPY_PCT: float = float(os.getenv("BASE_COPY_PCT", "0.05"))
 MAX_SINGLE_POSITION_PCT: float = float(os.getenv("MAX_SINGLE_POSITION_PCT", "0.08"))
-MIN_TRADE_SIZE_USDC: float = float(os.getenv("MIN_TRADE_SIZE_USDC", "2.0"))
+MIN_TRADE_SIZE_USDC: float = float(os.getenv("MIN_TRADE_SIZE_USDC", "1.0"))
 MAX_TRADE_SIZE_USDC: float = float(os.getenv("MAX_TRADE_SIZE_USDC", "500.0"))
 CONVICTION_MULTIPLIER: float = float(os.getenv("CONVICTION_MULTIPLIER", "1.5"))
 CONVICTION_THRESHOLD_PCT: float = float(os.getenv("CONVICTION_THRESHOLD_PCT", "0.05"))
 
 # --- Exit Rules ---
 STOP_LOSS_PCT: float = float(os.getenv("STOP_LOSS_PCT", "0.50"))
-EXIT_TIME_BUFFER_SECONDS: int = int(os.getenv("EXIT_TIME_BUFFER_SECONDS", "60"))
+EXIT_TIME_BUFFER_SECONDS: int = int(os.getenv("EXIT_TIME_BUFFER_SECONDS", "30"))
 
 # --- Risk Management ---
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.10"))
-DRAWDOWN_KILL_SWITCH_PCT: float = float(os.getenv("DRAWDOWN_KILL_SWITCH_PCT", "0.25"))
-MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "15"))
-MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MAX_CATEGORY_EXPOSURE_PCT", "0.35"))
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.20"))
+DRAWDOWN_KILL_SWITCH_PCT: float = float(os.getenv("DRAWDOWN_KILL_SWITCH_PCT", "0.40"))
+MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "5"))
+MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MAX_CATEGORY_EXPOSURE_PCT", "0.50"))
 CONSECUTIVE_LOSSES_KILL: int = int(os.getenv("CONSECUTIVE_LOSSES_KILL", "8"))
 WALLET_COOLDOWN_TRADES: int = int(os.getenv("WALLET_COOLDOWN_TRADES", "20"))
 WALLET_PAUSE_MIN_TRADES: int = int(os.getenv("WALLET_PAUSE_MIN_TRADES", "10"))
@@ -70,5 +79,5 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE: str = os.getenv("LOG_FILE", "bot.log")
 
 # --- Polling Intervals ---
-POSITION_CHECK_INTERVAL_SECONDS: int = int(os.getenv("POSITION_CHECK_INTERVAL_SECONDS", "30"))
-EXIT_CHECK_INTERVAL_SECONDS: int = int(os.getenv("EXIT_CHECK_INTERVAL_SECONDS", "15"))
+POSITION_CHECK_INTERVAL_SECONDS: int = int(os.getenv("POSITION_CHECK_INTERVAL_SECONDS", "5"))
+EXIT_CHECK_INTERVAL_SECONDS: int = int(os.getenv("EXIT_CHECK_INTERVAL_SECONDS", "5"))

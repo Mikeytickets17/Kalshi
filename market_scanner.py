@@ -1,50 +1,47 @@
 """
-Market scanner — 2 strategies only, quality over quantity.
+Market scanner — Latency arbitrage edge detector.
 
-Only the two strategies that backtest profitably:
+Continuously compares real-time CEX prices (Binance/Coinbase) against
+Polymarket's implied contract prices. When the divergence exceeds the
+edge threshold (default 3%), emits a trade signal.
 
-1. LONGSHOT FADE: YES under 12c in ANY category → buy NO
-   - Only when edge > 3c (survives the ~1.5c fee)
-   - Cheaper longshots have bigger bias, so tighter ceiling
-
-2. FAVORITE LEAN: YES above 75c in ANY category → buy YES
-   - Only when edge > 2c
-   - Higher floor means stronger favorites with more reliable bias
-
-Killed strategies (backtest losers):
-  - closing_drift: 49.6% WR, worse than coin flip
-  - multi_arb: losses 4x wins despite 71% WR
-  - stale_midrange: edge is indistinguishable from noise
+This is NOT a periodic scanner — it runs as a continuous async loop
+checking for edge on every price tick.
 """
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 import config
-from kalshi import KalshiClient, MarketInfo
+from price_feed import PriceFeed, PriceState
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MarketOpportunity:
-    """A market opportunity detected by the scanner."""
+    """A latency arbitrage opportunity."""
     market_id: str
     ticker: str
     title: str
     category: str
-    side: str
-    current_price: float
-    estimated_true_prob: float
-    edge: float
+    side: str                      # "YES" or "NO"
+    current_price: float           # Polymarket contract price we'd pay
+    estimated_true_prob: float     # What CEX price implies the true prob is
+    edge: float                    # Divergence as a decimal
     volume: float
     close_time_ts: int
-    opportunity_type: str
+    opportunity_type: str          # always "latency_arb"
     timestamp: float = field(default_factory=time.time)
+
+    # CEX data
+    cex_price: float = 0.0        # Spot price from Binance/Coinbase
+    asset: str = ""               # BTC, ETH
+    contract_strike: float = 0.0  # The price level the contract asks about
+    latency_ms: float = 0.0       # Estimated lag in Polymarket's price
 
     # Compatibility fields for position_sizer.py and notifier.py
     wallet_weight: float = 1.0
@@ -53,14 +50,33 @@ class MarketOpportunity:
     wallet_portfolio_pct: float = 0.0
 
 
-class MarketScanner:
-    """Scans Kalshi for high-edge longshot and favorite opportunities."""
+@dataclass
+class PolymarketContract:
+    """A Polymarket short-duration crypto contract."""
+    ticker: str
+    condition_id: str
+    asset: str           # BTC, ETH
+    direction: str       # "up" or "down"
+    strike: float        # price level
+    duration_minutes: int
+    yes_price: float
+    no_price: float
+    volume: float
+    close_time_ts: int
+    question: str
 
-    def __init__(self, client: KalshiClient) -> None:
-        self._client = client
+
+class MarketScanner:
+    """Latency arbitrage scanner — compares CEX prices to Polymarket contracts."""
+
+    def __init__(self, price_feed: PriceFeed) -> None:
+        self._feed = price_feed
         self._signal_queue: asyncio.Queue[MarketOpportunity] = asyncio.Queue()
-        self._running: bool = False
-        self._seen_markets: set[str] = set()
+        self._running = False
+        # Active Polymarket contracts to monitor
+        self._contracts: list[PolymarketContract] = []
+        self._last_contract_refresh: float = 0.0
+        self._recent_signals: set[str] = set()  # Prevent duplicate signals
 
     @property
     def signal_queue(self) -> asyncio.Queue[MarketOpportunity]:
@@ -69,206 +85,240 @@ class MarketScanner:
     async def start(self) -> None:
         self._running = True
         logger.info(
-            "MarketScanner starting (scan=%ds, longshot<%.0fc min_edge>%.0fc, "
-            "favorite>%.0fc min_edge>%.0fc, min_vol=$%d)",
-            config.SCAN_INTERVAL_SECONDS,
-            config.LONGSHOT_MAX_PRICE * 100, config.LONGSHOT_MIN_EDGE * 100,
-            config.FAVORITE_MIN_PRICE * 100, config.FAVORITE_MIN_EDGE * 100,
-            config.MIN_MARKET_VOLUME,
+            "MarketScanner starting — LATENCY ARBITRAGE mode "
+            "(threshold=%.1f%%, assets=%s, durations=%s)",
+            config.EDGE_THRESHOLD_PCT * 100,
+            config.TARGET_ASSETS,
+            config.TARGET_DURATIONS,
         )
 
-        if config.PAPER_MODE and not self._client.is_connected:
-            await self._run_paper_mode()
+        if config.PAPER_MODE:
+            await self._run_paper_arb()
         else:
-            await self._run_live_scan()
+            await self._run_live_arb()
 
     async def stop(self) -> None:
         self._running = False
         logger.info("MarketScanner stopped")
 
-    # --- Live Scanning ---
+    # --- Live Arbitrage Loop ---
 
-    async def _run_live_scan(self) -> None:
+    async def _run_live_arb(self) -> None:
+        """Continuous edge detection loop."""
         while self._running:
-            try:
-                all_markets = await self._fetch_all_markets()
-                opps_found = 0
+            # Refresh available contracts every 60 seconds
+            if time.time() - self._last_contract_refresh > 60:
+                await self._refresh_contracts()
 
-                for market in all_markets:
-                    opp = self._evaluate_market(market)
-                    if opp and opp.market_id not in self._seen_markets:
-                        self._seen_markets.add(opp.market_id)
+            # Check edge on every contract against current CEX price
+            for contract in self._contracts:
+                price_state = self._feed.get_price(contract.asset)
+                if not price_state or price_state.confidence < 0.5:
+                    continue
+
+                opp = self._check_edge(contract, price_state)
+                if opp:
+                    sig_key = f"{opp.ticker}-{opp.side}-{int(opp.timestamp)}"
+                    if sig_key not in self._recent_signals:
+                        self._recent_signals.add(sig_key)
                         await self._signal_queue.put(opp)
-                        opps_found += 1
                         logger.info(
-                            "Opportunity: %s %s @ %.2f edge=%.3f vol=$%.0f type=%s",
-                            opp.side, opp.ticker, opp.current_price,
-                            opp.edge, opp.volume, opp.opportunity_type,
+                            "EDGE DETECTED: %s %s edge=%.2f%% cex=$%.2f contract_implied=$%.2f",
+                            opp.side, opp.ticker, opp.edge * 100,
+                            opp.cex_price, opp.contract_strike,
                         )
 
-                logger.info("Scanned %d markets, found %d opportunities", len(all_markets), opps_found)
+            # Clear old signals every 5 min
+            if len(self._recent_signals) > 10000:
+                self._recent_signals.clear()
 
-                # Allow re-evaluation every hour (prices change)
-                if len(self._seen_markets) > 2000:
-                    self._seen_markets.clear()
+            # Check every 100ms — fast enough to catch 2.7s windows
+            await asyncio.sleep(0.1)
 
-            except Exception as exc:
-                logger.error("Market scan error: %s", exc, exc_info=True)
+    def _check_edge(
+        self, contract: PolymarketContract, cex: PriceState
+    ) -> Optional[MarketOpportunity]:
+        """
+        Compare CEX spot price to Polymarket contract implied price.
 
-            await asyncio.sleep(config.SCAN_INTERVAL_SECONDS)
+        Example: BTC is at $68,500 on Binance. Polymarket has a 15-minute
+        contract "Will BTC be above $68,400 in 15 minutes?" with YES at 55c.
 
-    async def _fetch_all_markets(self) -> list[MarketInfo]:
-        all_markets: list[MarketInfo] = []
-        cursor: Optional[str] = None
-        for _ in range(10):
-            markets = self._client.get_markets(status="open", limit=200, cursor=cursor)
-            if not markets:
-                break
-            all_markets.extend(markets)
-            if len(markets) < 200:
-                break
-            cursor = markets[-1].ticker
-        return all_markets
+        If BTC is already $100 above the strike, the true probability of
+        YES is much higher than 55% — more like 75-85% depending on
+        volatility. That's a 20-30% edge.
+        """
+        spot = cex.consensus_price
+        strike = contract.strike
 
-    def _evaluate_market(self, market: MarketInfo) -> Optional[MarketOpportunity]:
-        """Check if a market qualifies as a high-edge longshot or favorite."""
-        if not market.active or market.resolved:
+        if spot <= 0 or strike <= 0:
             return None
-        if market.volume_usdc < config.MIN_MARKET_VOLUME:
-            return None
-        if market.end_date_ts > 0:
-            if (market.end_date_ts - time.time()) < config.MIN_TIME_REMAINING_SECONDS:
-                return None
 
-        yes = market.yes_price
+        # Calculate how far spot is from the strike as a percentage
+        distance_pct = (spot - strike) / strike
 
-        # Strategy 1: LONGSHOT FADE
-        if 0.02 < yes <= config.LONGSHOT_MAX_PRICE:
-            opp = self._create_longshot(market)
-            if opp.edge >= config.LONGSHOT_MIN_EDGE:
-                return opp
+        # Estimate true probability based on distance from strike
+        # Closer to expiry + further from strike = higher certainty
+        time_left = max(contract.close_time_ts - time.time(), 60)
+        minutes_left = time_left / 60
 
-        # Strategy 2: FAVORITE LEAN
-        if config.FAVORITE_MIN_PRICE <= yes < 0.98:
-            opp = self._create_favorite(market)
-            if opp.edge >= config.FAVORITE_MIN_EDGE:
-                return opp
+        if contract.direction == "up":
+            # "Will BTC be above $X?" — YES is correct if spot > strike
+            if distance_pct > 0:
+                # Spot is ABOVE strike — YES should be worth more
+                # Further above + less time = higher true prob
+                true_prob = self._estimate_prob_above(distance_pct, minutes_left, contract.asset)
+                market_prob = contract.yes_price
+                edge = true_prob - market_prob
+
+                if edge >= config.EDGE_THRESHOLD_PCT and edge <= config.MAX_EDGE_PCT:
+                    return self._create_opportunity(contract, cex, "YES", market_prob, true_prob, edge)
+
+            else:
+                # Spot is BELOW strike — NO should be worth more
+                true_prob_no = self._estimate_prob_above(-distance_pct, minutes_left, contract.asset)
+                market_prob_no = contract.no_price
+                edge = true_prob_no - market_prob_no
+
+                if edge >= config.EDGE_THRESHOLD_PCT and edge <= config.MAX_EDGE_PCT:
+                    return self._create_opportunity(contract, cex, "NO", market_prob_no, true_prob_no, edge)
 
         return None
 
-    def _create_longshot(self, market: MarketInfo) -> MarketOpportunity:
+    def _estimate_prob_above(self, distance_pct: float, minutes_left: float, asset: str) -> float:
         """
-        Longshot fade with edge threshold.
+        Estimate true probability that price stays above/below strike.
 
-        Overestimation is strongest for the cheapest contracts:
-          - Under 5c: true prob ~50% lower than priced
-          - 5c-10c: true prob ~40% lower
-          - 10c-12c: true prob ~30% lower
-
-        We need the edge AFTER the ~1.5c fee to be positive.
+        Uses a simplified model based on:
+          - Distance from strike (bigger = more certain)
+          - Time to expiry (less time = more certain if already past strike)
+          - Asset volatility (BTC ~0.5% per 15 min, ETH ~0.7%)
         """
-        yes = market.yes_price
-        if yes <= 0.05:
-            overestimation = 0.50
-        elif yes <= 0.10:
-            overestimation = 0.40
+        # Annualized vol: BTC ~60%, ETH ~80%. Per-minute vol:
+        vol_per_min = {"BTC": 0.0004, "ETH": 0.0006}.get(asset, 0.0005)
+
+        # Expected move in remaining time (1 std dev)
+        expected_move = vol_per_min * (minutes_left ** 0.5)
+
+        if expected_move <= 0:
+            return 0.95 if distance_pct > 0 else 0.05
+
+        # How many standard deviations is the current price from strike?
+        z_score = distance_pct / expected_move
+
+        # Convert z-score to probability using a fast approximation
+        # P(staying above) ≈ cumulative normal distribution
+        if z_score > 3:
+            return 0.98
+        elif z_score > 2:
+            return 0.95
+        elif z_score > 1.5:
+            return 0.90
+        elif z_score > 1:
+            return 0.82
+        elif z_score > 0.5:
+            return 0.70
+        elif z_score > 0.2:
+            return 0.58
         else:
-            overestimation = 0.30
+            return 0.52
 
-        true_yes = yes * (1.0 - overestimation)
-        no_price = 1.0 - yes
-        true_no = 1.0 - true_yes
-        edge = true_no - no_price  # Our profit margin on the NO side
-
+    def _create_opportunity(
+        self, contract: PolymarketContract, cex: PriceState,
+        side: str, market_price: float, true_prob: float, edge: float,
+    ) -> MarketOpportunity:
         return MarketOpportunity(
-            market_id=market.market_id, ticker=market.ticker,
-            title=market.question, category=market.category,
-            side="NO", current_price=no_price,
-            estimated_true_prob=true_no, edge=round(edge, 4),
-            volume=market.volume_usdc, close_time_ts=market.end_date_ts,
-            opportunity_type="longshot",
-            wallet_weight=min(edge * 8, 1.0),
-            wallet_alias=f"longshot/{market.category}",
-            wallet_win_rate=true_no,
+            market_id=contract.ticker,
+            ticker=contract.ticker,
+            title=contract.question,
+            category="crypto",
+            side=side,
+            current_price=market_price,
+            estimated_true_prob=true_prob,
+            edge=round(edge, 4),
+            volume=contract.volume,
+            close_time_ts=contract.close_time_ts,
+            opportunity_type="latency_arb",
+            cex_price=cex.consensus_price,
+            asset=contract.asset,
+            contract_strike=contract.strike,
+            latency_ms=round((time.time() - cex.last_updated) * 1000, 1),
+            wallet_weight=min(edge * 5, 1.0),
+            wallet_alias=f"arb/{contract.asset}",
+            wallet_win_rate=true_prob,
+            wallet_portfolio_pct=min(edge, 0.10),
         )
 
-    def _create_favorite(self, market: MarketInfo) -> MarketOpportunity:
-        """
-        Favorite lean — stronger favorites get bigger bonus.
-
-        The favorite-longshot bias means high-probability outcomes
-        are underpriced. The effect is strongest above 85c.
-        """
-        yes = market.yes_price
-        if yes >= 0.90:
-            bonus = 0.04
-        elif yes >= 0.85:
-            bonus = 0.035
-        elif yes >= 0.80:
-            bonus = 0.03
-        else:
-            bonus = 0.025
-
-        true_yes = min(yes + bonus, 0.99)
-        edge = true_yes - yes
-
-        return MarketOpportunity(
-            market_id=market.market_id, ticker=market.ticker,
-            title=market.question, category=market.category,
-            side="YES", current_price=yes,
-            estimated_true_prob=true_yes, edge=round(edge, 4),
-            volume=market.volume_usdc, close_time_ts=market.end_date_ts,
-            opportunity_type="favorite",
-            wallet_weight=min(edge * 12, 1.0),
-            wallet_alias=f"favorite/{market.category}",
-            wallet_win_rate=true_yes,
-        )
+    async def _refresh_contracts(self) -> None:
+        """Fetch active short-duration crypto contracts from Polymarket."""
+        # In production, this would call the Polymarket Gamma API
+        # to find BTC/ETH 15-min and 1-hour up/down contracts
+        self._last_contract_refresh = time.time()
+        logger.debug("Refreshed contract list (%d contracts)", len(self._contracts))
 
     # --- Paper Mode ---
 
-    async def _run_paper_mode(self) -> None:
-        logger.info("[PAPER] MarketScanner running in simulation mode")
+    async def _run_paper_arb(self) -> None:
+        """Simulate latency arbitrage using the paper price feed."""
+        logger.info("[PAPER] MarketScanner running in LATENCY ARB simulation mode")
 
-        sample_markets = [
-            # Longshots (cheap, all categories)
-            {"ticker": "SPORTS-MLB-PIT-W", "title": "Will the Pirates win?", "cat": "sports", "yes": 0.07, "vol": 5200},
-            {"ticker": "SPORTS-NBA-ORL-UP", "title": "Will the Magic upset?", "cat": "sports", "yes": 0.10, "vol": 8400},
-            {"ticker": "ENT-OSCARS-INDIE", "title": "Indie film wins Best Picture?", "cat": "entertainment", "yes": 0.04, "vol": 6100},
-            {"ticker": "POL-3P-STATE", "title": "Third party wins a state?", "cat": "politics", "yes": 0.03, "vol": 12000},
-            {"ticker": "CRYPTO-BTC-150K", "title": "BTC hits $150k this month?", "cat": "crypto", "yes": 0.05, "vol": 15000},
-            {"ticker": "SPORTS-UFC-KO-R1", "title": "Fight ends in R1 KO?", "cat": "sports", "yes": 0.11, "vol": 7200},
-            {"ticker": "ECON-RECESSION-Q2", "title": "US recession in Q2?", "cat": "economics", "yes": 0.08, "vol": 28000},
-            # Favorites (strong, all categories)
-            {"ticker": "ECON-FED-HOLD", "title": "Fed holds rates?", "cat": "economics", "yes": 0.88, "vol": 45000},
-            {"ticker": "POL-INCUMB-WIN", "title": "Incumbent wins?", "cat": "politics", "yes": 0.79, "vol": 22000},
-            {"ticker": "ECON-CPI-ABOVE2", "title": "CPI stays above 2%?", "cat": "economics", "yes": 0.92, "vol": 35000},
-            {"ticker": "POL-BILL-PASS", "title": "Spending bill passes?", "cat": "politics", "yes": 0.81, "vol": 14000},
-            {"ticker": "ECON-JOBS-POS", "title": "Jobs report positive?", "cat": "economics", "yes": 0.86, "vol": 21000},
-            {"ticker": "SPORTS-NYY-PO", "title": "Yankees make playoffs?", "cat": "sports", "yes": 0.76, "vol": 18000},
-        ]
+        import random
 
+        # Simulate Polymarket contracts that lag behind CEX
         while self._running:
-            await asyncio.sleep(random.uniform(8, 20))
+            await asyncio.sleep(random.uniform(0.5, 3.0))
             if not self._running:
                 break
 
-            sample = random.choice(sample_markets)
-            noise = random.uniform(-0.015, 0.015)
-            yes = max(0.02, min(0.98, sample["yes"] + noise))
+            for asset in config.TARGET_ASSETS:
+                cex = self._feed.get_price(asset)
+                if not cex or cex.consensus_price <= 0:
+                    continue
 
-            market = MarketInfo(
-                market_id=sample["ticker"], ticker=sample["ticker"],
-                question=sample["title"], category=sample["cat"],
-                yes_price=round(yes, 4), no_price=round(1.0 - yes, 4),
-                liquidity_usdc=sample["vol"] * 0.5, volume_usdc=float(sample["vol"]),
-                end_date_ts=int(time.time()) + 86400 * random.randint(1, 14),
-                active=True, resolved=False,
-            )
+                spot = cex.consensus_price
 
-            opp = self._evaluate_market(market)
-            if opp:
-                logger.info(
-                    "[PAPER] Opportunity: %s %s @ %.2f edge=%.3f vol=$%.0f type=%s",
-                    opp.side, opp.ticker, opp.current_price, opp.edge, opp.volume, opp.opportunity_type,
+                # Simulate a Polymarket contract with a strike near current price
+                strike_offset = random.choice([-200, -100, -50, 0, 50, 100, 200])
+                if asset == "ETH":
+                    strike_offset = strike_offset // 10
+                strike = round(spot + strike_offset, 0)
+
+                # Simulate Polymarket's lagging price (2-8 second delay)
+                lag_seconds = random.uniform(2, 8)
+                distance_pct = (spot - strike) / strike
+
+                # Polymarket's YES price is based on old data (lagging)
+                # So it hasn't caught up to the current CEX price
+                vol_per_min = 0.0004 if asset == "BTC" else 0.0006
+                stale_z = (distance_pct - random.gauss(0, vol_per_min * 2)) / max(vol_per_min * 4, 0.001)
+
+                if stale_z > 0.5:
+                    poly_yes = max(0.05, min(0.95, 0.50 + stale_z * 0.08))
+                else:
+                    poly_yes = max(0.05, min(0.95, 0.50 + stale_z * 0.10))
+
+                minutes_left = random.choice([5, 8, 10, 12, 15, 30, 45, 60])
+                close_ts = int(time.time()) + minutes_left * 60
+
+                contract = PolymarketContract(
+                    ticker=f"{asset}-UP-{int(strike)}-{minutes_left}m",
+                    condition_id=f"0xpaper{int(time.time())}",
+                    asset=asset,
+                    direction="up",
+                    strike=strike,
+                    duration_minutes=minutes_left,
+                    yes_price=round(poly_yes, 4),
+                    no_price=round(1.0 - poly_yes, 4),
+                    volume=random.uniform(5000, 80000),
+                    close_time_ts=close_ts,
+                    question=f"Will {asset} be above ${strike:,.0f} in {minutes_left}m?",
                 )
-                await self._signal_queue.put(opp)
+
+                opp = self._check_edge(contract, cex)
+                if opp:
+                    logger.info(
+                        "[PAPER] ARB SIGNAL: %s %s edge=%.1f%% spot=$%.2f strike=$%.0f poly_yes=%.2f",
+                        opp.side, opp.ticker, opp.edge * 100,
+                        spot, strike, poly_yes,
+                    )
+                    await self._signal_queue.put(opp)
