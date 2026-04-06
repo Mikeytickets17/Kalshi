@@ -71,12 +71,14 @@ class LatencyArbBot:
         self._risk_manager = RiskManager(self._portfolio_value)
         self._notifier = TelegramNotifier()
 
-        # Components — Trump News Trading
+        # Components — Trump News Trading (3 trade types per post)
         from trump_monitor import TrumpMonitor
         from sentiment_analyzer import SentimentAnalyzer
+        from contract_matcher import ContractMatcher
         self._trump_monitor = TrumpMonitor()
         self._sentiment = SentimentAnalyzer()
         self._exchange = BinanceExecutor()
+        self._contract_matcher = ContractMatcher(self._kalshi)
         self._trump_positions: list[dict] = []  # Track open Trump trades
 
         logger.info(
@@ -396,11 +398,50 @@ class LatencyArbBot:
                     })
 
                     logger.info(
-                        "TRUMP TRADE: %s BTC $%.2f @ $%.2f (conf=%.2f, expected=%.1f%%, exec=%dms)",
+                        "TRUMP BTC TRADE: %s BTC $%.2f @ $%.2f (conf=%.2f, expected=%.1f%%, exec=%dms)",
                         result.side, result.filled_usd, result.filled_price,
                         sentiment.confidence, sentiment.expected_move_pct * 100,
                         result.execution_time_ms,
                     )
+
+                # ── STRATEGY 3: KALSHI CONTRACT TRADING ──
+                # Find Kalshi prediction contracts that match the post content
+                # e.g. "tariffs on China" → buy YES on "Will Trump impose tariffs?"
+                if sentiment.kalshi_keywords and sentiment.kalshi_confidence >= 0.50:
+                    matches = self._contract_matcher.find_matches(sentiment)
+                    for match in matches:
+                        contract_size = min(
+                            self._portfolio_value * 0.04 * match.confidence,
+                            400.0,
+                        )
+                        if contract_size < 2.0 or contract_size > self._available_balance:
+                            continue
+
+                        order = self._contract_matcher.execute_match(match, contract_size)
+                        if order and order.success:
+                            self._trade_count += 1
+                            self._available_balance -= contract_size
+                            self._trump_positions.append({
+                                "entry_time": time.time(),
+                                "side": match.side,
+                                "asset": "KALSHI",
+                                "entry_price": order.filled_price,
+                                "size_usd": order.filled_size,
+                                "qty": 0,
+                                "sentiment": sentiment.direction,
+                                "confidence": match.confidence,
+                                "expected_move": 0,
+                                "post_text": post.text[:100],
+                                "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
+                                "ticker": match.ticker,
+                                "type": "kalshi_contract",
+                            })
+                            logger.info(
+                                "TRUMP KALSHI TRADE: %s %s $%.2f @ %.2f (match=%.0f%%, conf=%.2f, kw=%s)",
+                                match.side, match.ticker, contract_size, order.filled_price,
+                                match.match_score * 100, match.confidence,
+                                match.keywords_matched,
+                            )
 
             except Exception as exc:
                 logger.error("Trump processor error: %s", exc, exc_info=True)

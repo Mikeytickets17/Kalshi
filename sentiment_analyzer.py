@@ -28,32 +28,46 @@ logger = logging.getLogger(__name__)
 class SentimentResult:
     """Result of analyzing a Trump post for market impact."""
     post: TrumpPost
-    is_market_relevant: bool    # Does this post affect BTC?
+    is_market_relevant: bool
     direction: str              # "bullish", "bearish", "neutral"
     confidence: float           # 0.0 to 1.0
-    expected_move_pct: float    # Expected BTC % move (e.g. 0.03 = 3%)
-    reasoning: str              # Why Claude thinks this
-    analysis_time_ms: float     # How long the analysis took
-    topics: list[str]           # ["crypto", "tariffs", "fed", etc.]
+    expected_move_pct: float    # Expected BTC % move
+    reasoning: str
+    analysis_time_ms: float
+    topics: list[str]
+    # Kalshi contract matching — which Trump-related contracts to trade
+    kalshi_keywords: list[str] = None  # Search terms for matching Kalshi contracts
+    kalshi_side: str = ""              # "YES" or "NO" on the matched contract
+    kalshi_confidence: float = 0.0     # Separate confidence for the contract trade
+
+    def __post_init__(self):
+        if self.kalshi_keywords is None:
+            self.kalshi_keywords = []
 
 
 # Pre-built prompt for maximum speed — no wasted tokens
-ANALYSIS_PROMPT = """Analyze this Trump social media post for its immediate impact on Bitcoin's price. Respond ONLY with a JSON object, no other text.
+ANALYSIS_PROMPT = """Analyze this Trump social media post for trading impact. Respond ONLY with a JSON object, no other text.
 
 Post: "{text}"
 
 Respond with exactly this JSON format:
-{{"relevant": true/false, "direction": "bullish"/"bearish"/"neutral", "confidence": 0.0-1.0, "move_pct": 0.0-0.10, "reasoning": "one sentence", "topics": ["crypto","tariffs","fed","trade_war","economy","regulation"]}}
+{{"relevant": true/false, "direction": "bullish"/"bearish"/"neutral", "confidence": 0.0-1.0, "move_pct": 0.0-0.10, "reasoning": "one sentence", "topics": ["crypto","tariffs","fed","trade_war","economy","regulation"], "kalshi_keywords": ["keyword1", "keyword2"], "kalshi_side": "YES"/"NO"/"", "kalshi_confidence": 0.0-1.0}}
 
 Rules:
-- "relevant" = true ONLY if the post directly affects BTC/crypto markets, tariffs, trade policy, Fed/interest rates, or USD strength
+- "relevant" = true if post affects BTC/crypto, tariffs, trade policy, Fed/rates, or USD
 - Personal attacks, rally talk, media complaints = NOT relevant
-- Crypto/BTC mentions = very relevant (usually bullish)
-- Tariff announcements = relevant (usually bearish for risk assets short-term)
-- Fed criticism / rate cut demands = relevant (usually bullish)
-- Trade war escalation = relevant (bearish)
-- "move_pct" = expected BTC move in next 30 minutes (0.01 = 1%)
-- Be conservative with confidence — only >0.7 if the signal is unmistakable"""
+- "direction" = BTC price direction (bullish/bearish/neutral)
+- "move_pct" = expected BTC move in 30 minutes (0.01 = 1%)
+- "kalshi_keywords" = search terms to find related Kalshi prediction contracts
+  Examples: if post mentions tariffs on China → ["tariff", "china", "trade"]
+  If post mentions firing someone → ["fire", person's name]
+  If post mentions executive order → ["executive order", topic]
+  If post mentions rate cuts → ["fed", "rate", "interest"]
+- "kalshi_side" = which side to buy on the matching Kalshi contract
+  If Trump ANNOUNCES he will do X → buy YES on "Will Trump do X?"
+  If Trump says he WON'T do X → buy NO
+- "kalshi_confidence" = how certain the post makes the contract outcome (0.8+ for announcements)
+- Be conservative — only >0.7 confidence for unmistakable signals"""
 
 
 class SentimentAnalyzer:
@@ -136,6 +150,9 @@ class SentimentAnalyzer:
                 reasoning=analysis.get("reasoning", ""),
                 analysis_time_ms=0,
                 topics=analysis.get("topics", []),
+                kalshi_keywords=analysis.get("kalshi_keywords", []),
+                kalshi_side=analysis.get("kalshi_side", ""),
+                kalshi_confidence=float(analysis.get("kalshi_confidence", 0.0)),
             )
 
         except json.JSONDecodeError as exc:
@@ -225,6 +242,44 @@ class SentimentAnalyzer:
             move *= 1.2
             reasoning += " + emphasis"
 
+        # Generate Kalshi contract matching keywords
+        kalshi_kw: list[str] = []
+        kalshi_side = ""
+        kalshi_conf = 0.0
+
+        if "tariffs" in topics:
+            kalshi_kw = ["tariff", "trade", "china", "import"]
+            kalshi_side = "YES"  # Trump announcing tariffs = YES on tariff contracts
+            kalshi_conf = confidence * 0.9
+        if "crypto" in topics:
+            kalshi_kw = ["bitcoin", "crypto", "btc", "digital"]
+            kalshi_side = "YES"  # Trump pro-crypto = YES on crypto-friendly contracts
+            kalshi_conf = confidence * 0.85
+        if "fed" in topics:
+            kalshi_kw = ["fed", "rate", "interest", "reserve"]
+            kalshi_side = "YES" if "cut" in text else "NO"
+            kalshi_conf = confidence * 0.7
+
+        # Check for specific policy announcements (highest confidence)
+        policy_patterns = {
+            "executive order": (["executive order"], "YES", 0.85),
+            "hereby order": (["executive order"], "YES", 0.90),
+            "effective immediately": (kalshi_kw, kalshi_side, 0.90),
+            "i am signing": (["executive order", "signing"], "YES", 0.88),
+            "fired": (["fire", "remove"], "YES", 0.80),
+            "terminate": (["fire", "remove", "terminate"], "YES", 0.80),
+            "nomination": (["nominate", "appoint"], "YES", 0.75),
+            "i am appointing": (["appoint", "nominate"], "YES", 0.85),
+        }
+        for pattern, (kw, side, conf) in policy_patterns.items():
+            if pattern in text:
+                kalshi_kw = kw + kalshi_kw
+                kalshi_side = side
+                kalshi_conf = max(kalshi_conf, conf)
+                relevant = True
+                if not topics:
+                    topics.append("policy")
+
         return SentimentResult(
             post=post,
             is_market_relevant=relevant,
@@ -234,6 +289,9 @@ class SentimentAnalyzer:
             reasoning=reasoning,
             analysis_time_ms=0,
             topics=topics,
+            kalshi_keywords=kalshi_kw,
+            kalshi_side=kalshi_side,
+            kalshi_confidence=round(kalshi_conf, 3),
         )
 
     async def close(self) -> None:
