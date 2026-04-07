@@ -95,7 +95,17 @@ class LatencyArbBot:
         # Components — Whale Tracker (copy top Kalshi traders)
         self._whale_tracker = WhaleTracker(self._kalshi)
 
-        # Initialize shared state for the dashboard
+        # Initialize shared state — recover from previous session if possible
+        prev_state = shared_state.load_from_disk()
+        if prev_state and prev_state.get("portfolio_value", 0) > 0:
+            self._portfolio_value = prev_state["portfolio_value"]
+            self._available_balance = self._portfolio_value
+            self._trade_count = prev_state.get("trade_count", 0)
+            self._win_count = prev_state.get("win_count", 0)
+            logger.info(
+                "RECOVERED from previous session: portfolio=$%.2f trades=%d wins=%d",
+                self._portfolio_value, self._trade_count, self._win_count,
+            )
         shared_state.init(self._portfolio_value)
 
         logger.info(
