@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multi-Strategy Trading Bot — LIVE</title>
+<title>Multi-Strategy Trading Bot — v4.7</title>
 <style>
 :root{--bg:#060a13;--card:#0d1321;--border:#1a2235;--text:#e2e8f0;--muted:#546484;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;--cyan:#06b6d4}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -86,7 +86,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
 </div>
 </div>
-<div class="footer">Multi-Strategy Trading Bot — Real-Time Data from Binance WebSocket + RSS News — All US Legal from NJ</div>
+<div class="footer">Multi-Strategy Trading Bot v4.7 — Real-Time Data — All US Legal from NJ — Build: 20260407-2</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -610,7 +610,8 @@ function render(){
   ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
 }
 
-// ═══ BOOT — cascade through price sources until one works ═══
+// ═══ BOOT v4.7 ═══
+console.log('Dashboard v4.7 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
 tryBinanceWS();             // Try WebSocket first (fastest)
 setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
   if(!btcPrice)tryBinanceREST();
