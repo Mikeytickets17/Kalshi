@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multi-Strategy Trading Bot — v4.7</title>
+<title>Multi-Strategy Trading Bot — v5.1</title>
 <style>
 :root{--bg:#060a13;--card:#0d1321;--border:#1a2235;--text:#e2e8f0;--muted:#546484;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;--cyan:#06b6d4}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -66,7 +66,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div style="display:flex;align-items:center;gap:16px">
 <div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div><div id="pnl-value" style="font-size:20px;font-weight:700">$0.00</div></div>
 <div class="badges">
-<span class="badge b1">LIVE DATA</span>
+<span class="badge b1" id="conn-badge">STANDALONE</span>
 <span class="badge b2">4 STRATEGIES</span>
 <span style="font-size:9px;color:var(--muted)"><span class="pulse"></span><span id="clock">--:--:--</span></span>
 </div>
@@ -80,13 +80,13 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 </div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
-<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Truth Social Monitor</span><span class="live-dot"><span class="pulse"></span>Polling every 3s</span></div><div class="card-b" id="trump"></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Social Media Monitor</span><span class="live-dot"><span class="pulse"></span>8 sources | 3s polling</span></div><div class="card-b" id="trump"></div></div>
 <div class="row r2">
 <div class="card"><div class="card-h"><span>Risk Management</span><span class="badge b1" style="font-size:7px">ACTIVE</span></div><div class="card-b" id="risk"></div></div>
 <div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
 </div>
 </div>
-<div class="footer">Multi-Strategy Trading Bot v5.0 — Real-Time Data — All US Legal from NJ — Build: 20260407-3</div>
+<div class="footer">Multi-Strategy Trading Bot v5.1 — Real-Time Data — 8 Trump Sources | 19 News Feeds | 4 Strategies — Build: 20260407-4</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -106,7 +106,7 @@ let activePositions=[];
 let posCounter=0;
 
 // ── PERSISTENCE: save all data to localStorage so refresh doesn't lose it ──
-const STATE_VERSION='v5.0'; // bump this to clear old fake data
+const STATE_VERSION='v5.1'; // bump this to clear old data from previous versions
 function saveState(){
   try{
     localStorage.setItem('bot_state',JSON.stringify({
@@ -187,10 +187,13 @@ async function pollBotState(){
         if(newsItems.length>30)newsItems.length=30;
       }
       console.log('Bot state synced:',s.total_trades,'trades,',s.positions?.length||0,'active');
+      const cb=document.getElementById('conn-badge');
+      if(cb){cb.textContent='BOT CONNECTED';cb.style.background='rgba(34,197,94,.1)';cb.style.color='var(--green)';cb.style.borderColor='rgba(34,197,94,.25)';}
     }
   }catch(e){
-    // Backend not available — dashboard runs standalone with browser-side signals
     botConnected=false;
+    const cb=document.getElementById('conn-badge');
+    if(cb){cb.textContent='STANDALONE';cb.style.background='rgba(245,158,11,.1)';cb.style.color='var(--amber)';cb.style.borderColor='rgba(245,158,11,.25)';}
   }
 }
 // Poll bot state every 3 seconds
@@ -571,13 +574,18 @@ function render(){
     return '<div style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:6px">'+n.time+'</span><span class="tag '+pc+'">'+n.pri+'</span> <span style="color:'+n.col+';margin-left:4px">'+n.text+'</span> <span style="color:var(--muted);font-size:8px">['+n.source+']</span></div>';
   }).join('')||'<div style="color:var(--muted)">Loading news feeds from Reuters, CNBC...</div>';
 
-  // Trump
-  const tp=currentTrump;
-  if(tp){
+  // Trump — show all detected posts from bot
+  const trumpEl=$('trump');
+  if(botConnected && currentTrump){
+    const tp=currentTrump;
+    const dc=tp.dir&&tp.dir.toUpperCase()==='BULLISH'?'var(--green)':tp.dir&&tp.dir.toUpperCase()==='BEARISH'?'var(--red)':'var(--muted)';
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST POST — via Bot</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+(tp.dir||'ANALYZING')+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf?((tp.conf*100).toFixed(0)+'%'):'--')+'</strong></div></div>';
+  }else if(currentTrump){
+    const tp=currentTrump;
     const dc=tp.dir==='BULLISH'?'var(--green)':'var(--red)';
-    $('trump').innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST DETECTED POST</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div><div><span style="color:var(--muted)">Expected BTC move:</span> <strong style="color:'+dc+'">'+(tp.dir==='BULLISH'?'+':'-')+tp.move+'%</strong></div><div><span style="color:var(--muted)">Topics:</span> '+tp.topics.map(t=>'<span class="tag t-trump">'+t+'</span>').join(' ')+'</div></div>';
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST DETECTED POST</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div></div>';
   }else{
-    $('trump').innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">MONITORING</div><q style="color:var(--muted)">Waiting for real Truth Social posts... Bot polls every 3 seconds when backend is running.</q></div><div style="font-size:10px;color:var(--muted);margin-top:6px">No posts detected yet. Start the bot with <code>python bot.py</code> to begin monitoring.</div>';
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">MONITORING — 6 SOURCES</div><q style="color:var(--muted)">Truth Social API + RSS + Atom + Nitter (3 mirrors) + Twitter/X API</q></div><div style="font-size:10px;color:var(--muted);margin-top:6px">'+(botConnected?'Bot connected — waiting for new posts...':'Start bot with <code>./start.sh</code> for real monitoring')+'</div>';
   }
 
   // Risk
@@ -592,13 +600,28 @@ function render(){
     return '<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:9px"><span>'+r.l+'</span><span style="color:var(--muted)">'+r.d+'</span></div><div class="rbar"><div class="rfill '+c+'" style="width:'+Math.min(p,100)+'%"></div></div></div>';
   }).join('');
 
-  // Performance
-  $('perf').innerHTML=[
-    {n:'LATENCY ARB',c:'var(--purple)',wr:'90-95%',v:'Kalshi'},
-    {n:'TRUMP NEWS',c:'var(--amber)',wr:'80-85%',v:'Binance + Kalshi'},
-    {n:'BREAKING NEWS',c:'var(--cyan)',wr:'65-75%',v:'All venues'},
-    {n:'KALSHI CONTRACTS',c:'var(--blue)',wr:'75-80%',v:'Kalshi'},
-  ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
+  // Performance — compute REAL stats from closed trades
+  const stratStats={};
+  closedTrades.forEach(t=>{
+    const s=t.strat||'UNKNOWN';
+    if(!stratStats[s])stratStats[s]={trades:0,wins:0,pnl:0};
+    stratStats[s].trades++;
+    if(t.result==='WIN')stratStats[s].wins++;
+    stratStats[s].pnl+=t.pnl;
+  });
+  const stratConfigs=[
+    {key:'ARB',n:'LATENCY ARB',c:'var(--purple)',v:'Kalshi'},
+    {key:'TRUMP',n:'TRUMP NEWS',c:'var(--amber)',v:'Binance + Kalshi'},
+    {key:'NEWS',n:'BREAKING NEWS',c:'var(--cyan)',v:'All venues'},
+    {key:'KALSHI',n:'KALSHI CONTRACTS',c:'var(--blue)',v:'Kalshi'},
+  ];
+  $('perf').innerHTML=stratConfigs.map(p=>{
+    const d=stratStats[p.key]||{trades:0,wins:0,pnl:0};
+    const wr=d.trades>0?(d.wins/d.trades*100).toFixed(0)+'%':'--';
+    const pnlStr=d.pnl>=0?'+$'+d.pnl.toFixed(2):'-$'+Math.abs(d.pnl).toFixed(2);
+    const pnlCol=d.pnl>=0?'var(--green)':'var(--red)';
+    return '<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+wr+'</div><div class="perf-l">Win Rate</div></div><div><div class="perf-v">'+d.trades+'</div><div class="perf-l">Trades</div></div><div><div class="perf-v" style="color:'+pnlCol+'">'+pnlStr+'</div><div class="perf-l">P&L</div></div></div></div>';
+  }).join('');
 }
 
 // ═══ BOOT v5.0 ═══

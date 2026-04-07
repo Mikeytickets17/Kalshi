@@ -137,6 +137,8 @@ class LatencyArbBot:
             asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
+            # Daily Telegram summary
+            asyncio.create_task(self._daily_summary_scheduler(), name="daily_summary"),
         ]
 
         try:
@@ -157,9 +159,39 @@ class LatencyArbBot:
         while self._running:
             try:
                 shared_state.periodic_flush()
+                # Also push risk state to shared_state
+                risk_summary = self._risk_manager.get_summary()
+                shared_state.update_risk(risk_summary)
             except Exception:
                 pass
             await asyncio.sleep(3)
+
+    async def _daily_summary_scheduler(self) -> None:
+        """Send daily Telegram summary at midnight UTC."""
+        logger.info("Daily summary scheduler started")
+        while self._running:
+            try:
+                # Calculate seconds until next midnight UTC
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                wait_secs = (midnight - now).total_seconds()
+                await asyncio.sleep(min(wait_secs, 3600))  # Check every hour at most
+
+                # Send summary at midnight
+                now2 = datetime.now(timezone.utc)
+                if now2.hour == 0 and now2.minute < 5:
+                    risk_summary = self._risk_manager.get_summary()
+                    self._notifier.notify_daily_summary(
+                        portfolio_value=self._portfolio_value,
+                        daily_pnl=risk_summary.get("daily_pnl", 0),
+                        open_positions=len(self._active_positions) + len(self._trump_positions) + len(self._news_positions),
+                        risk_summary=risk_summary,
+                    )
+                    await asyncio.sleep(300)  # Don't send again for 5 min
+            except Exception as exc:
+                logger.error("Daily summary error: %s", exc)
+                await asyncio.sleep(60)
 
     async def shutdown(self, reason: str = "Manual shutdown") -> None:
         if not self._running:
@@ -758,6 +790,11 @@ class LatencyArbBot:
                         confidence=action.confidence, reason=news.headline[:80],
                     )
                     shared_state.record_news(news.headline, news.source, news.priority, news.category)
+                    self._notifier.notify_news_trade(
+                        side=action.side, asset=action.asset, venue="Binance",
+                        size_usd=size, entry_price=result.filled_price,
+                        confidence=action.confidence, headline=news.headline,
+                    )
                     logger.info(
                         "NEWS TRADE: %s %s $%.2f on Binance (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
@@ -790,6 +827,11 @@ class LatencyArbBot:
                         confidence=action.confidence, reason=news.headline[:80],
                     )
                     shared_state.record_news(news.headline, news.source, news.priority, news.category)
+                    self._notifier.notify_news_trade(
+                        side=action.side, asset=action.asset, venue="Alpaca",
+                        size_usd=size, entry_price=result.filled_price,
+                        confidence=action.confidence, headline=news.headline,
+                    )
                     logger.info(
                         "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
