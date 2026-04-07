@@ -73,7 +73,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="row r6" id="stats"></div>
 <div class="row r2">
 <div class="card"><div class="card-h"><span>Total P&L Tracker</span><span class="live-dot"><span class="pulse"></span>Live</span></div><div class="card-b"><div style="text-align:center;padding:16px 0"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Cumulative Profit & Loss</div><div id="big-pnl" style="font-size:48px;font-weight:700;margin:8px 0">$0.00</div><div id="big-pnl-sub" style="font-size:12px">0 trades | 0% win rate</div></div><div id="pnl-chart" class="chart" style="height:80px;margin-top:8px"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-top:2px"><span>Session start</span><span>Now</span></div></div></div>
-<div class="card"><div class="card-h"><span>Closed Positions</span><span style="color:var(--muted);font-size:9px" id="closed-count">0 trades</span></div><div style="overflow-x:auto;max-height:250px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
+<div class="card"><div class="card-h"><span>Closed Positions</span><div style="display:flex;gap:16px;align-items:center"><span style="font-size:9px;color:var(--muted)" id="closed-count">0 trades</span><span style="font-size:13px;font-weight:700" id="closed-pnl-total">$0.00</span></div></div><div style="overflow-x:auto;max-height:320px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Running Total</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
 </div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
@@ -139,7 +139,7 @@ setInterval(()=>{
   const np=newPos[Math.floor(Math.random()*newPos.length)];
   posCounter++;
   activePositions.push({id:'p'+posCounter,time:new Date().toLocaleTimeString(),strat:np.strat,side:np.side,asset:np.asset,venue:np.venue,entry:np.entry,size:np.size,unrealizedPnl:0,openedAt:Date.now()});
-},Math.random()*20000+25000);
+},Math.random()*5000+5000); // scalp every 5-10 seconds
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -452,16 +452,27 @@ function render(){
     }).join('');
   }
 
-  // Closed positions table
-  $('closed-count').textContent=closedTrades.length+' closed';
-  $('closed-table').innerHTML=closedTrades.slice(0,15).map(t=>{
+  // Closed positions table with running total
+  $('closed-count').textContent=closedTrades.length+' trades';
+  const closedTotalPnl=closedTrades.reduce((s,t)=>s+t.pnl,0);
+  const ctEl=$('closed-pnl-total');
+  ctEl.textContent='Total: '+(closedTotalPnl>=0?'+$':'-$')+Math.abs(closedTotalPnl).toFixed(2);
+  ctEl.style.color=closedTotalPnl>=0?'var(--green)':'var(--red)';
+  let runningTotal=0;
+  // Show newest first but calculate running total from oldest
+  const ordered=[...closedTrades].reverse();
+  const runTotals=ordered.map(t=>{runningTotal+=t.pnl;return runningTotal;}).reverse();
+  $('closed-table').innerHTML=closedTrades.slice(0,25).map((t,i)=>{
     const sc='t-'+t.strat.toLowerCase();
     const sd=['YES','BUY','LONG'].includes(t.side)?'t-buy':'t-sell';
     const pnlStr=t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2);
     const pnlCol=t.pnl>=0?'var(--green)':'var(--red)';
+    const rt=runTotals[i]||0;
+    const rtStr=rt>=0?'+$'+rt.toFixed(2):'-$'+Math.abs(rt).toFixed(2);
+    const rtCol=rt>=0?'var(--green)':'var(--red)';
     const resBg=t.result==='WIN'?'t-buy':'t-sell';
-    return '<tr><td style="color:var(--muted)">'+t.time+'</td><td><span class="tag '+sc+'">'+t.strat+'</span></td><td><span class="tag '+sd+'">'+t.side+'</span></td><td>'+t.asset+'</td><td style="color:var(--muted)">'+t.venue+'</td><td>'+t.size+'</td><td style="color:'+pnlCol+';font-weight:700">'+pnlStr+'</td><td><span class="tag '+resBg+'">'+t.result+'</span></td></tr>';
-  }).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">No closed trades yet...</td></tr>';
+    return '<tr><td style="color:var(--muted)">'+t.time+'</td><td><span class="tag '+sc+'">'+t.strat+'</span></td><td><span class="tag '+sd+'">'+t.side+'</span></td><td>'+t.asset+'</td><td style="color:var(--muted)">'+t.venue+'</td><td>'+t.size+'</td><td style="color:'+pnlCol+';font-weight:700">'+pnlStr+'</td><td style="color:'+rtCol+'">'+rtStr+'</td><td><span class="tag '+resBg+'">'+t.result+'</span></td></tr>';
+  }).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No closed trades yet...</td></tr>';
 
   // P&L banner (sticky header)
   const pnlEl=$('pnl-value');
