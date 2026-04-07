@@ -71,8 +71,8 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="wrap">
 <div class="row r6" id="stats"></div>
 <div class="row r2">
-<div class="card"><div class="card-h"><span>CEX Price Feeds — REAL-TIME</span><span class="live-dot"><span class="pulse"></span><span id="price-src">Connecting...</span></span></div><div class="card-b" id="cex"></div></div>
-<div class="card"><div class="card-h"><span>BTC Price Chart (Live)</span><span style="color:var(--muted);font-size:9px" id="chart-range"></span></div><div class="card-b"><div class="chart" id="chart"></div></div></div>
+<div class="card"><div class="card-h"><span>Total P&L Tracker</span><span class="live-dot"><span class="pulse"></span>Live</span></div><div class="card-b"><div style="text-align:center;padding:16px 0"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Cumulative Profit & Loss</div><div id="big-pnl" style="font-size:48px;font-weight:700;margin:8px 0">$0.00</div><div id="big-pnl-sub" style="font-size:12px">0 trades | 0% win rate</div></div><div id="pnl-chart" class="chart" style="height:80px;margin-top:8px"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-top:2px"><span>Session start</span><span>Now</span></div></div></div>
+<div class="card"><div class="card-h"><span>Closed Positions</span><span style="color:var(--muted);font-size:9px" id="closed-count">0 trades</span></div><div style="overflow-x:auto;max-height:250px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
 </div>
 <div class="row r2">
 <div class="card"><div class="card-h"><span>Live Trade Signals — What the Bot Would Trade RIGHT NOW</span><span class="live-dot"><span class="pulse"></span>Active</span></div><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Reason</th><th>Conf</th><th>P&L</th></tr></thead><tbody id="signals"></tbody></table></div></div>
@@ -95,9 +95,11 @@ let btcPrice=0,ethPrice=0,btcPrev=0,ethPrev=0;
 let btcHistory=[];
 let signals=[];
 let newsItems=[];
-let tradeCount=0,winCount=0,totalPnl=0;
+let tradeCount=0,winCount=0,totalPnl=0,todayPnl=0;
 let priceSource='loading';
 var portfolio=10000;
+let closedTrades=[];  // completed trades with P&L
+let pnlHistory=[];    // running P&L for the chart
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -245,8 +247,10 @@ function checkArbSignal(asset,price){
     const size=Math.min(300,portfolio*0.03);
     const won=Math.random()<0.9;
     const pnl=won?(edge*size):(edge*size*-3);
-    totalPnl+=pnl;
+    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
     tradeCount++;if(won)winCount++;
+    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
+    if(closedTrades.length>30)closedTrades.pop();
     signals.unshift({
       time:new Date().toLocaleTimeString(),
       strat:'ARB',side:side,
@@ -286,7 +290,9 @@ function generateNewsSignal(headline,pri){
     a.pnl=pnl;a.size=size;
     signals.unshift(a);
     tradeCount++;if(won)winCount++;
-    totalPnl+=pnl;
+    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
+    closedTrades.unshift({time:a.time,strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
+    if(closedTrades.length>30)closedTrades.pop();
   });
   if(signals.length>20)signals=signals.slice(0,20);
 }
@@ -309,20 +315,26 @@ function rotateTrump(){
     const btcSize=Math.min(500,portfolio*0.05);
     const btcWon=Math.random()<0.85;
     const btcPnl=btcWon?(btcSize*currentTrump.move/100):(-btcSize*0.015);
-    totalPnl+=btcPnl;tradeCount++;if(btcWon)winCount++;
+    totalPnl+=btcPnl;todayPnl+=btcPnl;pnlHistory.push(totalPnl);tradeCount++;if(btcWon)winCount++;
+    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',size:'$'+btcSize.toFixed(0),pnl:btcPnl,result:btcWon?'WIN':'LOSS'});
+    if(closedTrades.length>30)closedTrades.pop();
     signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf,pnl:btcPnl,size:btcSize});
     if(currentTrump.topics.includes('crypto')){
       const kSize=Math.min(300,portfolio*0.03);
       const kWon=Math.random()<0.80;
-      const kPnl=kWon?(kSize*0.40):(-kSize*0.25); // contract jumps 40% or drops 25%
-      totalPnl+=kPnl;tradeCount++;if(kWon)winCount++;
+      const kPnl=kWon?(kSize*0.40):(-kSize*0.25);
+      totalPnl+=kPnl;todayPnl+=kPnl;pnlHistory.push(totalPnl);tradeCount++;if(kWon)winCount++;
+      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:'$'+kSize.toFixed(0),pnl:kPnl,result:kWon?'WIN':'LOSS'});
+      if(closedTrades.length>30)closedTrades.pop();
       signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85,pnl:kPnl,size:kSize});
     }
     if(currentTrump.topics.includes('tariffs')){
       const tSize=Math.min(300,portfolio*0.03);
       const tWon=Math.random()<0.85;
-      const tPnl=tWon?(tSize*0.50):(-tSize*0.20); // tariff contract jumps 50% on announcement
-      totalPnl+=tPnl;tradeCount++;if(tWon)winCount++;
+      const tPnl=tWon?(tSize*0.50):(-tSize*0.20);
+      totalPnl+=tPnl;todayPnl+=tPnl;pnlHistory.push(totalPnl);tradeCount++;if(tWon)winCount++;
+      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:'$'+tSize.toFixed(0),pnl:tPnl,result:tWon?'WIN':'LOSS'});
+      if(closedTrades.length>30)closedTrades.pop();
       signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9,pnl:tPnl,size:tSize});
     }
   }
@@ -348,33 +360,38 @@ function render(){
   // Stats
   $('stats').innerHTML=[
     ['PORTFOLIO','$'+portfolio.toFixed(2),fmt(totalPnl)+' ('+(totalPnl/100).toFixed(1)+'%)',totalPnl>=0?'green':'red'],
-    ['BTC PRICE',btcPrice?'$'+btcPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...',(btcPrice-btcPrev>=0?'▲ +':'▼ ')+'$'+Math.abs(btcPrice-btcPrev).toFixed(2),btcPrice>=btcPrev?'green':'red'],
-    ['ETH PRICE',ethPrice?'$'+ethPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...',(ethPrice-ethPrev>=0?'▲ +':'▼ ')+'$'+Math.abs(ethPrice-ethPrev).toFixed(2),ethPrice>=ethPrev?'green':'red'],
+    ['TOTAL P&L',fmt(totalPnl),(totalPnl/100).toFixed(2)+'% return',totalPnl>=0?'green':'red'],
+    ['TODAY P&L',fmt(todayPnl),closedTrades.length+' closed trades',todayPnl>=0?'green':'red'],
     ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
     ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
     ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
   ].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
 
-  // CEX
+  // Big P&L display
+  const bigPnl=$('big-pnl');
+  bigPnl.textContent=(totalPnl>=0?'+$':'-$')+Math.abs(totalPnl).toFixed(2);
+  bigPnl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+  $('big-pnl-sub').innerHTML=tradeCount+' trades | '+wr.toFixed(0)+'% win rate | <span style="color:var(--muted)">'+priceSource+'</span>';
   $('price-src').textContent=priceSource;
-  $('cex').innerHTML=[
-    {a:'BTC',p:btcPrice,prev:btcPrev},
-    {a:'ETH',p:ethPrice,prev:ethPrev}
-  ].map(c=>{
-    const chg=c.p-c.prev;const col=chg>=0?'var(--green)':'var(--red)';
-    return '<div class="cex"><b>'+c.a+'</b><span class="p" style="color:'+col+'">$'+(c.p?c.p.toLocaleString(undefined,{minimumFractionDigits:2}):'Loading...')+'</span><small>Change: '+(chg>=0?'+':'')+chg.toFixed(2)+' | Source: '+priceSource+'</small></div>';
-  }).join('');
-
-  // Chart
-  if(btcHistory.length>2){
-    const mn=Math.min(...btcHistory),mx=Math.max(...btcHistory),rng=mx-mn||1;
-    $('chart').innerHTML=btcHistory.map(v=>{
-      const h=Math.max(2,((v-mn)/rng)*110);
-      const c=v>=btcHistory[0]?'var(--blue)':'var(--red)';
-      return '<div style="height:'+h+'px;background:'+c+'" title="$'+v.toFixed(2)+'"></div>';
+  // P&L equity curve
+  if(pnlHistory.length>1){
+    const mn=Math.min(...pnlHistory,0),mx=Math.max(...pnlHistory,0),rng=mx-mn||1;
+    $('pnl-chart').innerHTML=pnlHistory.slice(-100).map(v=>{
+      const h=Math.max(2,((v-mn)/rng)*70);
+      return '<div style="height:'+h+'px;background:'+(v>=0?'var(--green)':'var(--red)')+'" title="$'+v.toFixed(2)+'"></div>';
     }).join('');
-    $('chart-range').textContent='$'+mn.toFixed(0)+' — $'+mx.toFixed(0);
   }
+
+  // Closed positions table
+  $('closed-count').textContent=closedTrades.length+' closed';
+  $('closed-table').innerHTML=closedTrades.slice(0,15).map(t=>{
+    const sc='t-'+t.strat.toLowerCase();
+    const sd=['YES','BUY','LONG'].includes(t.side)?'t-buy':'t-sell';
+    const pnlStr=t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2);
+    const pnlCol=t.pnl>=0?'var(--green)':'var(--red)';
+    const resBg=t.result==='WIN'?'t-buy':'t-sell';
+    return '<tr><td style="color:var(--muted)">'+t.time+'</td><td><span class="tag '+sc+'">'+t.strat+'</span></td><td><span class="tag '+sd+'">'+t.side+'</span></td><td>'+t.asset+'</td><td style="color:var(--muted)">'+t.venue+'</td><td>'+t.size+'</td><td style="color:'+pnlCol+';font-weight:700">'+pnlStr+'</td><td><span class="tag '+resBg+'">'+t.result+'</span></td></tr>';
+  }).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">No closed trades yet...</td></tr>';
 
   // P&L banner (sticky header)
   const pnlEl=$('pnl-value');
