@@ -78,12 +78,20 @@ else
     sleep 1
 
     echo -e "${GREEN}[START] Dashboard → http://localhost:5050${NC}"
-    echo ""
-    echo -e "${CYAN}  Open your browser to: ${GREEN}http://localhost:5050${NC}"
-    echo -e "${CYAN}  Press Ctrl+C to stop everything${NC}"
-    echo ""
     python3 dashboard.py &
     DASH_PID=$!
+    sleep 1
+
+    echo -e "${GREEN}[START] Research Scanner (background)${NC}"
+    python3 research_scanner.py &
+    RESEARCH_PID=$!
+
+    echo ""
+    echo -e "${CYAN}  Dashboard: ${GREEN}http://localhost:5050${NC}"
+    echo -e "${CYAN}  Bot + Research Scanner running in background${NC}"
+    echo -e "${CYAN}  Research findings saved to research_log.json${NC}"
+    echo -e "${CYAN}  Press Ctrl+C to stop everything${NC}"
+    echo ""
 
     # Wait for either to exit
     wait -n $BOT_PID $DASH_PID 2>/dev/null
