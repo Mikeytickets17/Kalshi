@@ -222,8 +222,8 @@ class NewsFeed:
 
         # CRITICAL — these move markets instantly
         critical_kw = [
-            "federal reserve", "rate decision", "rate cut", "rate hike",
-            "fomc", "interest rate",
+            "federal reserve", "rate decision", "rate cut", "cuts rate", "rate hike",
+            "fomc", "interest rate", "fed cut", "fed hike",
             " cpi ", "cpi report", "cpi comes", "cpi data",
             "inflation data", "inflation rate",
             "jobs report", "nonfarm payroll", "nonfarm payrolls",
@@ -238,6 +238,7 @@ class NewsFeed:
             "digital asset", "nuclear",
             "nato", "iran strike",
             "just in:", "breaking:",
+            "bitcoin", "ethereum",
         ]
         if any(kw in text for kw in critical_kw):
             item.category = self._categorize(text)
@@ -253,7 +254,7 @@ class NewsFeed:
             "china", "russia", "iran",
             "treasury yield", "bond market",
             "stock market", "s&p 500", "nasdaq", "dow jones",
-            "bitcoin", "ethereum", "crypto",
+            "crypto", "altcoin",
             "trump administration", "white house",
             "congressional", "federal deficit",
             "inflation report", "housing data",
