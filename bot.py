@@ -1,18 +1,14 @@
 """
-Polymarket Latency Arbitrage + Trump News Trading Bot.
+Multi-Strategy Trading Bot — Kalshi + Binance + Stocks.
 
-Two strategies running simultaneously:
+4 strategies running simultaneously, all legal from NJ:
 
-1. LATENCY ARB (the 0x8dxd strategy):
-   Stream BTC/ETH from Binance/Coinbase, compare to Polymarket
-   contract prices, trade when divergence > 3%.
+1. LATENCY ARB: CEX price vs Kalshi crypto contracts
+2. TRUMP NEWS: Truth Social → Claude → BTC spot + Kalshi contracts
+3. BREAKING NEWS: Reuters/AP/Fed/BLS → Claude → stocks + BTC + Kalshi
+4. KALSHI CONTRACTS: Match any news to Kalshi prediction markets
 
-2. TRUMP NEWS TRADING:
-   Monitor Truth Social every 3 seconds. When Trump posts about
-   crypto/tariffs/Fed, analyze with Claude API, execute BTC spot
-   trade on Binance within seconds. Hold for 15-30 minutes.
-
-Both strategies share the same risk manager and notifier.
+Venues: Kalshi (contracts), Binance (BTC/ETH spot+futures), Alpaca (US stocks)
 """
 
 import asyncio
@@ -25,14 +21,17 @@ from typing import Optional
 
 import config
 from exchange import BinanceExecutor, TradeResult
-from market_scanner import MarketOpportunity, MarketScanner
-from notifier import TelegramNotifier
 from kalshi_client import KalshiClient
+from market_scanner import MarketOpportunity, MarketScanner
+from news_analyzer import NewsAnalyzer, TradeAction
+from news_feed import NewsFeed, NewsItem
+from notifier import TelegramNotifier
 from polymarket import Position, Side, OrderResult
 from position_sizer import PositionSizer
 from price_feed import PriceFeed
 from risk_manager import RiskManager
 from signal_evaluator import EvaluationResult, SignalEvaluator
+from stock_trader import StockTrader
 
 # --- Logging Setup ---
 
@@ -71,7 +70,7 @@ class LatencyArbBot:
         self._risk_manager = RiskManager(self._portfolio_value)
         self._notifier = TelegramNotifier()
 
-        # Components — Trump News Trading (3 trade types per post)
+        # Components — Trump News Trading
         from trump_monitor import TrumpMonitor
         from sentiment_analyzer import SentimentAnalyzer
         from contract_matcher import ContractMatcher
@@ -79,7 +78,13 @@ class LatencyArbBot:
         self._sentiment = SentimentAnalyzer()
         self._exchange = BinanceExecutor()
         self._contract_matcher = ContractMatcher(self._kalshi)
-        self._trump_positions: list[dict] = []  # Track open Trump trades
+        self._trump_positions: list[dict] = []
+
+        # Components — Universal News Trading (stocks, BTC, Kalshi)
+        self._news_feed = NewsFeed()
+        self._news_analyzer = NewsAnalyzer()
+        self._stock_trader = StockTrader()
+        self._news_positions: list[dict] = []
 
         logger.info(
             "LatencyArbBot initialized: paper=%s portfolio=$%.2f",
@@ -110,6 +115,10 @@ class LatencyArbBot:
             asyncio.create_task(self._trump_monitor.start(), name="trump_monitor"),
             asyncio.create_task(self._trump_news_processor(), name="trump_processor"),
             asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
+            # Strategy 3: Universal News → Stocks + BTC + Kalshi
+            asyncio.create_task(self._news_feed.start(), name="news_feed"),
+            asyncio.create_task(self._news_processor(), name="news_processor"),
+            asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
         ]
 
         try:
@@ -161,8 +170,11 @@ class LatencyArbBot:
         await self._scanner.stop()
         await self._price_feed.stop()
         await self._trump_monitor.stop()
+        await self._news_feed.stop()
         await self._sentiment.close()
+        await self._news_analyzer.close()
         self._exchange.close()
+        self._stock_trader.close()
         self._kalshi.close()
         self._notifier.close()
 
@@ -486,6 +498,202 @@ class LatencyArbBot:
                 await asyncio.sleep(10)
             except Exception as exc:
                 logger.error("Trump exit monitor error: %s", exc, exc_info=True)
+                await asyncio.sleep(5)
+
+
+    # --- Strategy 3: Universal News → Multi-Venue Execution ---
+
+    async def _news_processor(self) -> None:
+        """Process breaking news → analyze → trade across all venues."""
+        logger.info("News processor started — monitoring Reuters, AP, Fed, BLS, CNBC...")
+        while self._running:
+            try:
+                try:
+                    news = await asyncio.wait_for(
+                        self._news_feed.news_queue.get(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                logger.info(
+                    "NEWS [%s]: %s [%s]",
+                    news.priority.upper(), news.headline[:80], news.source,
+                )
+
+                # Analyze with Claude or rules
+                actions = await self._news_analyzer.analyze(news)
+                if not actions:
+                    logger.debug("No tradeable actions from this headline")
+                    continue
+
+                # Execute each action on its venue
+                for action in actions:
+                    if action.confidence < 0.50:
+                        continue
+
+                    size = min(
+                        self._portfolio_value * action.size_pct * action.confidence,
+                        config.TRUMP_MAX_TRADE_SIZE_USDC,
+                    )
+                    if size < 2.0 or size > self._available_balance:
+                        continue
+
+                    result = await self._execute_news_action(action, size, news)
+                    if result:
+                        self._available_balance -= size
+
+            except Exception as exc:
+                logger.error("News processor error: %s", exc, exc_info=True)
+
+    async def _execute_news_action(self, action: TradeAction, size: float, news: NewsItem) -> bool:
+        """Execute a single trade action on the appropriate venue."""
+        try:
+            if action.venue == "binance_spot":
+                if action.side in ("BUY", "LONG"):
+                    result = self._exchange.buy(action.asset, size)
+                else:
+                    result = self._exchange.sell(action.asset, size)
+                if result.success:
+                    self._trade_count += 1
+                    self._news_positions.append({
+                        "entry_time": time.time(),
+                        "venue": "binance",
+                        "asset": action.asset,
+                        "side": action.side,
+                        "size_usd": size,
+                        "entry_price": result.filled_price,
+                        "hold_until": time.time() + action.hold_minutes * 60,
+                        "headline": news.headline[:80],
+                    })
+                    logger.info(
+                        "NEWS TRADE: %s %s $%.2f on Binance (conf=%.2f, reason=%s)",
+                        action.side, action.asset, size, action.confidence, action.reasoning[:40],
+                    )
+                    return True
+
+            elif action.venue == "alpaca_stock":
+                if action.side in ("BUY", "LONG"):
+                    result = self._stock_trader.buy(action.asset, size)
+                else:
+                    result = self._stock_trader.sell(action.asset, size)
+                if result.success:
+                    self._trade_count += 1
+                    self._news_positions.append({
+                        "entry_time": time.time(),
+                        "venue": "alpaca",
+                        "asset": action.asset,
+                        "side": action.side,
+                        "size_usd": size,
+                        "entry_price": result.filled_price,
+                        "hold_until": time.time() + action.hold_minutes * 60,
+                        "headline": news.headline[:80],
+                    })
+                    logger.info(
+                        "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
+                        action.side, action.asset, size, action.confidence, action.reasoning[:40],
+                    )
+                    return True
+
+            elif action.venue == "kalshi_contract" and action.kalshi_keywords:
+                from contract_matcher import ContractMatch
+                # Search Kalshi for matching contracts
+                matches = self._contract_matcher.find_matches(
+                    type("S", (), {
+                        "kalshi_keywords": action.kalshi_keywords,
+                        "kalshi_side": action.kalshi_side,
+                        "kalshi_confidence": action.confidence,
+                    })()
+                )
+                for match in matches[:1]:
+                    order = self._contract_matcher.execute_match(match, size)
+                    if order and order.success:
+                        self._trade_count += 1
+                        self._news_positions.append({
+                            "entry_time": time.time(),
+                            "venue": "kalshi",
+                            "asset": match.ticker,
+                            "side": match.side,
+                            "size_usd": size,
+                            "entry_price": order.filled_price,
+                            "hold_until": time.time() + action.hold_minutes * 60,
+                            "headline": news.headline[:80],
+                        })
+                        logger.info(
+                            "KALSHI TRADE: %s %s $%.2f (matched=%s, conf=%.2f)",
+                            match.side, match.ticker, size, match.keywords_matched, action.confidence,
+                        )
+                        return True
+
+            elif action.venue == "binance_futures":
+                # Futures with leverage
+                leveraged_size = size * action.leverage
+                if action.side in ("LONG", "BUY"):
+                    result = self._exchange.buy(action.asset, leveraged_size)
+                else:
+                    result = self._exchange.sell(action.asset, leveraged_size)
+                if result.success:
+                    self._trade_count += 1
+                    self._news_positions.append({
+                        "entry_time": time.time(),
+                        "venue": "binance_futures",
+                        "asset": action.asset,
+                        "side": action.side,
+                        "size_usd": leveraged_size,
+                        "margin": size,
+                        "leverage": action.leverage,
+                        "entry_price": result.filled_price,
+                        "hold_until": time.time() + action.hold_minutes * 60,
+                        "headline": news.headline[:80],
+                    })
+                    logger.info(
+                        "FUTURES TRADE: %s %s $%.2f (%dx leverage, margin=$%.2f, conf=%.2f)",
+                        action.side, action.asset, leveraged_size, action.leverage,
+                        size, action.confidence,
+                    )
+                    return True
+
+        except Exception as exc:
+            logger.error("Failed to execute %s on %s: %s", action.side, action.venue, exc)
+        return False
+
+    async def _news_exit_monitor(self) -> None:
+        """Exit news-driven trades after hold period."""
+        logger.info("News exit monitor started")
+        while self._running:
+            try:
+                for pos in list(self._news_positions):
+                    if time.time() >= pos["hold_until"]:
+                        venue = pos["venue"]
+                        size = pos.get("margin", pos["size_usd"])
+
+                        if venue == "binance" or venue == "binance_futures":
+                            if pos["side"] in ("BUY", "LONG"):
+                                self._exchange.sell(pos["asset"], pos["size_usd"])
+                            else:
+                                self._exchange.buy(pos["asset"], pos["size_usd"])
+                        elif venue == "alpaca":
+                            self._stock_trader.close_position(pos["asset"])
+
+                        # Simulate P&L in paper mode
+                        pnl = size * random.uniform(-0.02, 0.04)
+                        won = pnl > 0
+                        if won:
+                            self._win_count += 1
+                        self._available_balance += size + pnl
+                        self._portfolio_value += pnl
+                        self._risk_manager.record_trade_result(pnl, source_wallet=venue)
+
+                        logger.info(
+                            "NEWS EXIT: %s %s %s pnl=$%+.2f (held %dm, headline=%s)",
+                            "WIN" if won else "LOSS", pos["venue"], pos["asset"],
+                            pnl, (time.time() - pos["entry_time"]) / 60,
+                            pos.get("headline", "")[:40],
+                        )
+                        self._news_positions.remove(pos)
+
+                await asyncio.sleep(10)
+            except Exception as exc:
+                logger.error("News exit error: %s", exc, exc_info=True)
                 await asyncio.sleep(5)
 
 

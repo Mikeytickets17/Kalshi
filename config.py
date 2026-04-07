@@ -21,6 +21,10 @@ KALSHI_USE_DEMO: bool = os.getenv("KALSHI_USE_DEMO", "true").lower() == "true"
 KALSHI_BASE_URL_DEMO: str = "https://demo-api.kalshi.co/trade-api/v2"
 KALSHI_BASE_URL_PROD: str = "https://api.elections.kalshi.com/trade-api/v2"
 
+# --- Alpaca Stock Trading ---
+ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", "")
+
 # --- Binance Spot Trading ---
 BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
