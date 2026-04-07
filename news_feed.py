@@ -102,6 +102,14 @@ RSS_FEEDS = [
     # Financial data
     ("yahoo_finance", "https://finance.yahoo.com/news/rssheadlines", 15),
     ("investing_com", "https://www.investing.com/rss/news.rss", 15),
+
+    # Google News (free, no key, covers everything)
+    ("google_news_world", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en", 10),
+    ("google_news_business", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en", 10),
+
+    # Reddit (public RSS, no API key needed)
+    ("reddit_wallstreetbets", "https://www.reddit.com/r/wallstreetbets/hot.json?limit=5", 30),
+    ("reddit_crypto", "https://www.reddit.com/r/CryptoCurrency/hot.json?limit=5", 30),
 ]
 
 
@@ -136,8 +144,12 @@ class NewsFeed:
                 )
             )
 
+        # Brave Search for real-time breaking news (if key set)
+        if config.BRAVE_API_KEY:
+            tasks.append(asyncio.create_task(self._poll_brave_search(), name="brave_search"))
+            logger.info("Brave Search enabled for real-time news")
+
         if config.PAPER_MODE:
-            # Also run paper simulation alongside real feeds
             tasks.append(asyncio.create_task(self._run_paper_mode(), name="paper_news"))
 
         await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
@@ -147,13 +159,65 @@ class NewsFeed:
         await self._http.aclose()
         logger.info("NewsFeed stopped")
 
+    async def _poll_brave_search(self) -> None:
+        """Poll Brave Search API for real-time breaking news every 30s."""
+        queries = [
+            "Trump breaking news today",
+            "Federal Reserve rate decision",
+            "breaking geopolitical news",
+            "Iran ceasefire OR strike OR nuclear",
+            "Kalshi prediction market",
+            "Bitcoin crypto regulation",
+        ]
+        q_idx = 0
+        while self._running:
+            try:
+                query = queries[q_idx % len(queries)]
+                q_idx += 1
+                resp = await self._http.get(
+                    "https://api.search.brave.com/res/v1/news/search",
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip",
+                        "X-Subscription-Token": config.BRAVE_API_KEY,
+                    },
+                    params={"q": query, "count": 5, "freshness": "pd"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for r in data.get("results", []):
+                        title = r.get("title", "")
+                        if title and title not in [n.headline for n in self._seen_hashes]:
+                            item = NewsItem(
+                                headline=title,
+                                body=r.get("description", "")[:300],
+                                source="Brave:" + r.get("meta_url", {}).get("hostname", "web"),
+                                url=r.get("url", ""),
+                                timestamp=time.time(),
+                            )
+                            item.priority = self._classify_priority(item)
+                            if item.priority in ("critical", "high"):
+                                self._seen_hashes.add(item.text_hash)
+                                await self._news_queue.put(item)
+                                logger.info("[BRAVE] %s: %s", item.priority.upper(), title[:80])
+                elif resp.status_code == 429:
+                    logger.warning("Brave Search rate limited, backing off 60s")
+                    await asyncio.sleep(60)
+            except Exception as exc:
+                logger.debug("Brave Search error: %s", exc)
+            await asyncio.sleep(30)
+
     async def _poll_rss(self, name: str, url: str, interval: int) -> None:
-        """Poll a single RSS feed."""
+        """Poll a single RSS feed (handles both XML and Reddit JSON)."""
         while self._running:
             try:
                 resp = await self._http.get(url)
                 if resp.status_code == 200:
-                    items = self._parse_rss(resp.text, name)
+                    # Handle Reddit JSON endpoints
+                    if "reddit.com" in url and url.endswith(".json?limit=5"):
+                        items = self._parse_reddit(resp.text, name)
+                    else:
+                        items = self._parse_rss(resp.text, name)
                     for item in items:
                         if item.text_hash not in self._seen_hashes:
                             self._seen_hashes.add(item.text_hash)
@@ -169,6 +233,28 @@ class NewsFeed:
                 logger.debug("RSS %s error: %s", name, exc)
 
             await asyncio.sleep(interval)
+
+    def _parse_reddit(self, json_text: str, source: str) -> list[NewsItem]:
+        """Parse Reddit JSON response for top posts."""
+        items = []
+        try:
+            import json
+            data = json.loads(json_text)
+            for post in data.get("data", {}).get("children", [])[:5]:
+                pd = post.get("data", {})
+                title = pd.get("title", "")
+                if not title:
+                    continue
+                items.append(NewsItem(
+                    headline=title,
+                    body=pd.get("selftext", "")[:300],
+                    source=source,
+                    url=f"https://reddit.com{pd.get('permalink', '')}",
+                    timestamp=pd.get("created_utc", time.time()),
+                ))
+        except Exception as exc:
+            logger.debug("Reddit parse error: %s", exc)
+        return items
 
     def _parse_rss(self, xml: str, source: str) -> list[NewsItem]:
         """Fast regex RSS parser — no XML library needed for speed."""
