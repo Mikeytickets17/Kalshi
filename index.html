@@ -40,6 +40,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 .t-news{background:rgba(6,182,212,.1);color:var(--cyan)}
 .t-crit{background:rgba(239,68,68,.12);color:var(--red)}
 .t-high{background:rgba(245,158,11,.12);color:var(--amber)}
+.t-news{background:rgba(100,116,139,.12);color:var(--muted)}
 .pos{color:var(--green)}.neg{color:var(--red)}
 .tbox{background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.15);border-radius:6px;padding:10px;margin:6px 0}
 .tbox q{font-style:italic;line-height:1.5;display:block;margin-bottom:6px}
@@ -74,6 +75,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>Total P&L Tracker</span><span class="live-dot"><span class="pulse"></span>Live</span></div><div class="card-b"><div style="text-align:center;padding:16px 0"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Cumulative Profit & Loss</div><div id="big-pnl" style="font-size:48px;font-weight:700;margin:8px 0">$0.00</div><div id="big-pnl-sub" style="font-size:12px">0 trades | 0% win rate</div></div><div id="pnl-chart" class="chart" style="height:80px;margin-top:8px"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-top:2px"><span>Session start</span><span>Now</span></div></div></div>
 <div class="card"><div class="card-h"><span>Closed Positions</span><span style="color:var(--muted);font-size:9px" id="closed-count">0 trades</span></div><div style="overflow-x:auto;max-height:250px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
 </div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
 <div class="row r2">
 <div class="card"><div class="card-h"><span>Live Trade Signals — What the Bot Would Trade RIGHT NOW</span><span class="live-dot"><span class="pulse"></span>Active</span></div><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Reason</th><th>Conf</th><th>P&L</th></tr></thead><tbody id="signals"></tbody></table></div></div>
 <div class="card"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
@@ -100,6 +102,7 @@ let priceSource='loading';
 var portfolio=10000;
 let closedTrades=[];  // completed trades with P&L
 let pnlHistory=[];    // running P&L for the chart
+let activePositions=[]; // currently open positions
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -195,11 +198,14 @@ async function tryCryptoCompare(){
   }
 }
 
-// ── LIVE NEWS via RSS-to-JSON ──
+// ── LIVE NEWS via multiple RSS-to-JSON services ──
 async function fetchNews(){
   const feeds=[
-    {name:'Reuters',url:'https://api.rss2json.com/v1/api.json?rss_url=https://feeds.reuters.com/reuters/topNews'},
-    {name:'CNBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01%26id=100003114'},
+    {name:'CNBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Fsearch.cnbc.com%2Frs%2Fsearch%2Fcombinedcms%2Fview.xml%3FpartnerId%3Dwrss01%26id%3D100003114'},
+    {name:'Reuters',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.reuters.com%2Freuters%2FtopNews'},
+    {name:'MarketWatch',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.marketwatch.com%2Fmarketwatch%2Ftopstories'},
+    {name:'BBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.bbci.co.uk%2Fnews%2Fbusiness%2Frss.xml'},
+    {name:'NYT',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Frss.nytimes.com%2Fservices%2Fxml%2Frss%2Fnyt%2FBusiness.xml'},
   ];
   for(const feed of feeds){
     try{
@@ -226,10 +232,11 @@ async function fetchNews(){
 function classifyNews(h){
   const t=h.toLowerCase();
   const crit=['federal reserve','rate cut','rate hike','tariff','cpi','inflation','bitcoin','crypto','recession','executive order','nonfarm'];
-  const high=['breaking','earnings','stock','market','trump','china','oil','jobs','treasury','s&p'];
-  if(crit.some(k=>t.includes(k)))return{pri:'CRIT',col:t.includes('cut')||t.includes('bitcoin')||t.includes('surge')?'var(--green)':'var(--red)'};
-  if(high.some(k=>t.includes(k)))return{pri:'HIGH',col:t.includes('beat')||t.includes('surge')||t.includes('high')||t.includes('rally')?'var(--green)':'var(--amber)'};
-  return null;
+  const high=['breaking','earnings','stock','market','trump','china','oil','jobs','treasury','s&p','trade','economy','gdp','fed','bank','dollar'];
+  if(crit.some(k=>t.includes(k)))return{pri:'CRIT',col:t.includes('cut')||t.includes('bitcoin')||t.includes('surge')||t.includes('rise')?'var(--green)':'var(--red)'};
+  if(high.some(k=>t.includes(k)))return{pri:'HIGH',col:t.includes('beat')||t.includes('surge')||t.includes('high')||t.includes('rally')||t.includes('rise')||t.includes('gain')?'var(--green)':'var(--amber)'};
+  // Show ALL news, even low priority
+  return{pri:'NEWS',col:'var(--muted)'};
 }
 
 // ── TRADE SIGNAL GENERATION (runs on live data) ──
@@ -247,10 +254,18 @@ function checkArbSignal(asset,price){
     const size=Math.min(300,portfolio*0.03);
     const won=Math.random()<0.9;
     const pnl=won?(edge*size):(edge*size*-3);
-    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-    tradeCount++;if(won)winCount++;
-    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>30)closedTrades.pop();
+    // Open position first, close after hold time
+    const posId='arb-'+Date.now();
+    activePositions.push({id:posId,time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',entry:contractPrice.toFixed(2),size:size,unrealizedPnl:0,openedAt:Date.now()});
+    // Schedule close after 15-60 seconds (simulating contract resolution)
+    setTimeout(()=>{
+      const idx=activePositions.findIndex(p=>p.id===posId);
+      if(idx>=0)activePositions.splice(idx,1);
+      totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
+      tradeCount++;if(won)winCount++;
+      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
+      if(closedTrades.length>30)closedTrades.pop();
+    },Math.random()*45000+15000);
     signals.unshift({
       time:new Date().toLocaleTimeString(),
       strat:'ARB',side:side,
@@ -315,26 +330,44 @@ function rotateTrump(){
     const btcSize=Math.min(500,portfolio*0.05);
     const btcWon=Math.random()<0.85;
     const btcPnl=btcWon?(btcSize*currentTrump.move/100):(-btcSize*0.015);
-    totalPnl+=btcPnl;todayPnl+=btcPnl;pnlHistory.push(totalPnl);tradeCount++;if(btcWon)winCount++;
-    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',size:'$'+btcSize.toFixed(0),pnl:btcPnl,result:btcWon?'WIN':'LOSS'});
-    if(closedTrades.length>30)closedTrades.pop();
+    const btcPosId='trump-btc-'+Date.now();
+    activePositions.push({id:btcPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',entry:btcPrice?'$'+btcPrice.toFixed(0):'$68,500',size:btcSize,unrealizedPnl:0,openedAt:Date.now()});
+    setTimeout(()=>{
+      const idx=activePositions.findIndex(p=>p.id===btcPosId);
+      if(idx>=0)activePositions.splice(idx,1);
+      totalPnl+=btcPnl;todayPnl+=btcPnl;pnlHistory.push(totalPnl);tradeCount++;if(btcWon)winCount++;
+      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',size:'$'+btcSize.toFixed(0),pnl:btcPnl,result:btcWon?'WIN':'LOSS'});
+      if(closedTrades.length>30)closedTrades.pop();
+    },Math.random()*60000+30000);
     signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf,pnl:btcPnl,size:btcSize});
     if(currentTrump.topics.includes('crypto')){
       const kSize=Math.min(300,portfolio*0.03);
       const kWon=Math.random()<0.80;
       const kPnl=kWon?(kSize*0.40):(-kSize*0.25);
-      totalPnl+=kPnl;todayPnl+=kPnl;pnlHistory.push(totalPnl);tradeCount++;if(kWon)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:'$'+kSize.toFixed(0),pnl:kPnl,result:kWon?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
+      const kPosId='trump-k-'+Date.now();
+      activePositions.push({id:kPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',entry:'0.27',size:kSize,unrealizedPnl:0,openedAt:Date.now()});
+      setTimeout(()=>{
+        const idx=activePositions.findIndex(p=>p.id===kPosId);
+        if(idx>=0)activePositions.splice(idx,1);
+        totalPnl+=kPnl;todayPnl+=kPnl;pnlHistory.push(totalPnl);tradeCount++;if(kWon)winCount++;
+        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:'$'+kSize.toFixed(0),pnl:kPnl,result:kWon?'WIN':'LOSS'});
+        if(closedTrades.length>30)closedTrades.pop();
+      },Math.random()*60000+20000);
       signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85,pnl:kPnl,size:kSize});
     }
     if(currentTrump.topics.includes('tariffs')){
       const tSize=Math.min(300,portfolio*0.03);
       const tWon=Math.random()<0.85;
       const tPnl=tWon?(tSize*0.50):(-tSize*0.20);
-      totalPnl+=tPnl;todayPnl+=tPnl;pnlHistory.push(totalPnl);tradeCount++;if(tWon)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:'$'+tSize.toFixed(0),pnl:tPnl,result:tWon?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
+      const tPosId='trump-t-'+Date.now();
+      activePositions.push({id:tPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:'0.45',size:tSize,unrealizedPnl:0,openedAt:Date.now()});
+      setTimeout(()=>{
+        const idx=activePositions.findIndex(p=>p.id===tPosId);
+        if(idx>=0)activePositions.splice(idx,1);
+        totalPnl+=tPnl;todayPnl+=tPnl;pnlHistory.push(totalPnl);tradeCount++;if(tWon)winCount++;
+        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:'$'+tSize.toFixed(0),pnl:tPnl,result:tWon?'WIN':'LOSS'});
+        if(closedTrades.length>30)closedTrades.pop();
+      },Math.random()*60000+20000);
       signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9,pnl:tPnl,size:tSize});
     }
   }
@@ -398,6 +431,24 @@ function render(){
   pnlEl.textContent=(totalPnl>=0?'+':'')+totalPnl.toFixed(2);
   pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
 
+  // Active positions — update unrealized P&L with live prices
+  activePositions.forEach(p=>{
+    const age=(Date.now()-p.openedAt)/1000;
+    // Simulate unrealized P&L drifting based on time held
+    p.unrealizedPnl=p.size*(Math.random()-0.45)*0.02*Math.sqrt(age/30);
+  });
+  $('active-count').textContent=activePositions.length+' open';
+  $('active-table').innerHTML=activePositions.map(p=>{
+    const sc='t-'+p.strat.toLowerCase();
+    const sd=['YES','BUY','LONG'].includes(p.side)?'t-buy':'t-sell';
+    const upnl=p.unrealizedPnl;
+    const upnlStr=upnl>=0?'+$'+upnl.toFixed(2):'-$'+Math.abs(upnl).toFixed(2);
+    const upnlCol=upnl>=0?'var(--green)':'var(--red)';
+    const ageSec=Math.round((Date.now()-p.openedAt)/1000);
+    const ageStr=ageSec<60?ageSec+'s':Math.round(ageSec/60)+'m';
+    return '<tr><td style="color:var(--muted)">'+p.time+'</td><td><span class="tag '+sc+'">'+p.strat+'</span></td><td><span class="tag '+sd+'">'+p.side+'</span></td><td>'+p.asset+'</td><td style="color:var(--muted)">'+p.venue+'</td><td>'+p.entry+'</td><td>$'+p.size.toFixed(0)+'</td><td style="color:'+upnlCol+';font-weight:700">'+upnlStr+'</td><td style="color:var(--muted)">'+ageStr+'</td></tr>';
+  }).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No open positions</td></tr>';
+
   // Signals with per-trade P&L
   $('signals').innerHTML=signals.slice(0,12).map(s=>{
     const sc='t-'+s.strat.toLowerCase();
@@ -412,7 +463,7 @@ function render(){
 
   // News
   $('news').innerHTML=newsItems.map(n=>{
-    const pc=n.pri==='CRIT'?'t-crit':'t-high';
+    const pc=n.pri==='CRIT'?'t-crit':n.pri==='HIGH'?'t-high':'t-news';
     return '<div style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:6px">'+n.time+'</span><span class="tag '+pc+'">'+n.pri+'</span> <span style="color:'+n.col+';margin-left:4px">'+n.text+'</span> <span style="color:var(--muted);font-size:8px">['+n.source+']</span></div>';
   }).join('')||'<div style="color:var(--muted)">Loading news feeds from Reuters, CNBC...</div>';
 
