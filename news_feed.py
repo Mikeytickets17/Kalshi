@@ -79,7 +79,7 @@ RSS_FEEDS = [
     ("cnbc_top", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114", 10),
     ("cnbc_markets", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258", 10),
     ("marketwatch", "https://feeds.marketwatch.com/marketwatch/topstories", 15),
-    ("wsj_markets", "https://feeds.a]wsj.com/rss/RSSMarketsMain.xml", 15),
+    ("wsj_markets", "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain.xml", 15),
 
     # Government — official sources
     ("whitehouse", "https://www.whitehouse.gov/feed/", 30),
@@ -90,6 +90,18 @@ RSS_FEEDS = [
 
     # Economic data releases
     ("bls_news", "https://www.bls.gov/feed/bls_latest.rss", 30),
+
+    # Crypto-specific
+    ("coindesk", "https://www.coindesk.com/arc/outboundfeeds/rss/", 15),
+    ("cointelegraph", "https://cointelegraph.com/rss", 15),
+
+    # Political/Trump-relevant
+    ("politico", "https://rss.politico.com/politics-news.xml", 20),
+    ("hill", "https://thehill.com/feed/", 20),
+
+    # Financial data
+    ("yahoo_finance", "https://finance.yahoo.com/news/rssheadlines", 15),
+    ("investing_com", "https://www.investing.com/rss/news.rss", 15),
 ]
 
 
@@ -114,19 +126,21 @@ class NewsFeed:
         self._running = True
         logger.info("NewsFeed starting — %d sources", len(RSS_FEEDS))
 
-        if config.PAPER_MODE:
-            await self._run_paper_mode()
-        else:
-            # Start each RSS feed as a separate task
-            tasks = []
-            for name, url, interval in RSS_FEEDS:
-                tasks.append(
-                    asyncio.create_task(
-                        self._poll_rss(name, url, interval),
-                        name=f"rss_{name}",
-                    )
+        # Always start real RSS feeds regardless of mode
+        tasks = []
+        for name, url, interval in RSS_FEEDS:
+            tasks.append(
+                asyncio.create_task(
+                    self._poll_rss(name, url, interval),
+                    name=f"rss_{name}",
                 )
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            )
+
+        if config.PAPER_MODE:
+            # Also run paper simulation alongside real feeds
+            tasks.append(asyncio.create_task(self._run_paper_mode(), name="paper_news"))
+
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
         self._running = False
@@ -217,6 +231,10 @@ class NewsFeed:
             "bitcoin reserve", "crypto regulation",
             "gdp growth", "recession",
             "debt ceiling", "government shutdown",
+            "trump", "truth social",
+            "strategic bitcoin", "crypto executive",
+            "digital asset", "nuclear",
+            "nato", "iran strike",
         ]
         if any(kw in text for kw in critical_kw):
             item.category = self._categorize(text)
@@ -233,6 +251,11 @@ class NewsFeed:
             "treasury yield", "bond market",
             "stock market", "s&p 500", "nasdaq", "dow jones",
             "bitcoin", "ethereum", "crypto",
+            "trump administration", "white house",
+            "congressional", "federal deficit",
+            "inflation report", "housing data",
+            "consumer confidence", "manufacturing",
+            "unemployment",
         ]
         if any(kw in text for kw in high_kw):
             item.category = self._categorize(text)

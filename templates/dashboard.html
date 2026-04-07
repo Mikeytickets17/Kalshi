@@ -355,12 +355,14 @@ function render(data) {
   $('realized-pnl').textContent = fmt(data.realized_pnl);
   $('realized-pnl').className = 'stat-value ' + (data.realized_pnl >= 0 ? 'green' : 'red');
   $('total-trades').textContent = data.total_trades + ' closed trades';
-  $('drawdown').textContent = data.risk.drawdown_pct.toFixed(2) + '%';
-  $('drawdown').className = 'stat-value ' + (data.risk.drawdown_pct > 15 ? 'red' : data.risk.drawdown_pct > 8 ? 'amber' : 'green');
-  $('last-scan').textContent = 'Last scan: ' + data.last_scan;
-  $('uptime').textContent = data.uptime;
+  var dd = (data.drawdown_pct || (data.risk && data.risk.drawdown_pct) || 0);
+  $('drawdown').textContent = dd.toFixed(2) + '%';
+  $('drawdown').className = 'stat-value ' + (dd > 15 ? 'red' : dd > 8 ? 'amber' : 'green');
+  $('last-scan').textContent = 'Last scan: ' + (data.last_scan || '--');
+  $('uptime').textContent = data.uptime || '--';
   $('peak-label').textContent = 'Peak: $' + data.peak_value.toLocaleString(undefined, {minimumFractionDigits:2});
-  $('positions-count').textContent = data.positions.length + '/' + data.risk.positions_max;
+  var posMax = (data.risk && data.risk.positions_max) || 8;
+  $('positions-count').textContent = data.positions.length + '/' + posMax;
   $('scan-time').textContent = data.last_scan;
 
   // Equity chart
@@ -417,11 +419,12 @@ function render(data) {
   ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No closed trades yet — trades appear here after positions are exited</td></tr>';
 
   // Risk meters
+  var r = data.risk || {};
   const risks = [
-    {label: 'Daily P&L', val: Math.abs(data.risk.daily_pnl_pct), max: data.risk.daily_limit, display: data.risk.daily_pnl_pct.toFixed(2) + '% / -' + data.risk.daily_limit + '%'},
-    {label: 'Drawdown', val: data.risk.drawdown_pct, max: data.risk.drawdown_limit, display: data.risk.drawdown_pct.toFixed(2) + '% / ' + data.risk.drawdown_limit + '%'},
-    {label: 'Consecutive Losses', val: data.risk.consecutive_losses, max: data.risk.max_consec, display: data.risk.consecutive_losses + ' / ' + data.risk.max_consec},
-    {label: 'Open Positions', val: data.risk.positions_used, max: data.risk.positions_max, display: data.risk.positions_used + ' / ' + data.risk.positions_max},
+    {label: 'Daily P&L', val: Math.abs(r.daily_pnl_pct || 0), max: r.daily_limit || 15, display: (r.daily_pnl_pct || 0).toFixed(2) + '% / -' + (r.daily_limit || 15) + '%'},
+    {label: 'Drawdown', val: r.drawdown_pct || dd || 0, max: r.drawdown_limit || 35, display: (r.drawdown_pct || dd || 0).toFixed(2) + '% / ' + (r.drawdown_limit || 35) + '%'},
+    {label: 'Consecutive Losses', val: r.consecutive_losses || 0, max: r.max_consec || 8, display: (r.consecutive_losses || 0) + ' / ' + (r.max_consec || 8)},
+    {label: 'Open Positions', val: r.positions_used || data.positions.length, max: r.positions_max || 8, display: (r.positions_used || data.positions.length) + ' / ' + (r.positions_max || 8)},
   ];
   $('risk-meters').innerHTML = risks.map(r => {
     const pct = (r.val / r.max) * 100;

@@ -250,11 +250,37 @@ class MarketScanner:
         )
 
     async def _refresh_contracts(self) -> None:
-        """Fetch active short-duration crypto contracts from Polymarket."""
-        # In production, this would call the Polymarket Gamma API
-        # to find BTC/ETH 15-min and 1-hour up/down contracts
+        """Fetch active short-duration crypto contracts from Kalshi."""
         self._last_contract_refresh = time.time()
-        logger.debug("Refreshed contract list (%d contracts)", len(self._contracts))
+        try:
+            # Import kalshi client to fetch real contracts
+            from kalshi_client import KalshiClient
+            kalshi = KalshiClient()
+            if kalshi.is_connected:
+                markets = kalshi.get_crypto_markets()
+                self._contracts = []
+                for m in markets:
+                    if not m.active or m.settled:
+                        continue
+                    self._contracts.append(PolymarketContract(
+                        ticker=m.ticker,
+                        condition_id=m.ticker,
+                        asset=m.asset,
+                        direction="up" if m.direction == "above" else "down",
+                        strike=m.strike,
+                        duration_minutes=max(1, int((m.close_time_ts - time.time()) / 60)),
+                        yes_price=m.yes_price,
+                        no_price=m.no_price,
+                        volume=m.volume,
+                        close_time_ts=m.close_time_ts,
+                        question=m.title,
+                    ))
+                logger.info("Refreshed %d Kalshi crypto contracts", len(self._contracts))
+                kalshi.close()
+            else:
+                logger.warning("Kalshi not connected — no contracts to scan")
+        except Exception as exc:
+            logger.error("Failed to refresh contracts: %s", exc)
 
     # --- Paper Mode ---
 

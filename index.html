@@ -86,7 +86,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
 </div>
 </div>
-<div class="footer">Multi-Strategy Trading Bot v4.7 — Real-Time Data — All US Legal from NJ — Build: 20260407-2</div>
+<div class="footer">Multi-Strategy Trading Bot v5.0 — Real-Time Data — All US Legal from NJ — Build: 20260407-3</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -143,11 +143,65 @@ else{console.log('Fresh session — starting from zero (all fake data cleared)')
 // Save state every 3 seconds
 setInterval(saveState,3000);
 
+// ── BOT STATE POLLING: fetch real bot data from Flask backend ──
+let botConnected=false;
+async function pollBotState(){
+  try{
+    const r=await fetch('/api/state');
+    if(!r.ok)throw new Error(r.status);
+    const s=await r.json();
+    if(s.bot_running){
+      botConnected=true;
+      // Merge real bot data into dashboard state
+      if(s.closed_trades&&s.closed_trades.length>0){
+        closedTrades=s.closed_trades.map(t=>({
+          time:new Date((t.closed_at||t.opened_at||Date.now())*1000).toLocaleTimeString(),
+          strat:t.strategy||'BOT',side:t.side,asset:t.asset,venue:t.venue,
+          size:'$'+(t.size_usd||0).toFixed(0),pnl:t.pnl||0,result:t.result||'--'
+        }));
+      }
+      if(s.positions&&s.positions.length>0){
+        activePositions=s.positions.map(p=>({
+          id:p.id||'bot-'+Math.random(),time:new Date((p.opened_at||Date.now())*1000).toLocaleTimeString(),
+          strat:p.strategy||'BOT',side:p.side,asset:p.asset,venue:p.venue,
+          entry:typeof p.entry_price==='number'?(p.entry_price<10?p.entry_price.toFixed(2):'$'+p.entry_price.toFixed(0)):p.entry_price,
+          size:p.size_usd||0,unrealizedPnl:p.unrealized_pnl||0,openedAt:(p.opened_at||Date.now()/1000)*1000
+        }));
+      }
+      totalPnl=s.total_pnl||0;
+      tradeCount=s.trade_count||s.total_trades||0;
+      winCount=s.win_count||s.wins||0;
+      if(s.equity_curve)pnlHistory=s.equity_curve.map(v=>v-(s.initial_balance||10000));
+      // Update Trump posts from bot
+      if(s.trump_posts&&s.trump_posts.length>0){
+        const tp=s.trump_posts[0];
+        currentTrump={text:tp.text,dir:tp.sentiment||'NEUTRAL',conf:tp.confidence||0,move:0,topics:[]};
+      }
+      // Update news from bot
+      if(s.news_items&&s.news_items.length>0){
+        s.news_items.forEach(n=>{
+          if(!newsItems.find(x=>x.text===n.headline)){
+            newsItems.unshift({time:new Date(n.detected_at*1000).toLocaleTimeString(),text:n.headline,source:n.source,pri:n.priority==='critical'?'CRIT':n.priority==='high'?'HIGH':'NEWS',col:n.priority==='critical'?'var(--red)':'var(--amber)'});
+          }
+        });
+        if(newsItems.length>30)newsItems.length=30;
+      }
+      console.log('Bot state synced:',s.total_trades,'trades,',s.positions?.length||0,'active');
+    }
+  }catch(e){
+    // Backend not available — dashboard runs standalone with browser-side signals
+    botConnected=false;
+  }
+}
+// Poll bot state every 3 seconds
+setInterval(pollBotState,3000);
+pollBotState();
+
 // ── Trade lifecycle: positions open ONLY from real signals, close after hold time ──
-// No fake/random position generation. Trades come from:
+// When bot is running: trades come from the Python backend via /api/state
+// When bot is offline: trades come from browser-side signal generators:
 //   1. checkArbSignal() — real price divergence between CEX and Kalshi contracts
 //   2. generateNewsSignal() — real news headlines triggering trade logic
-//   3. rotateTrump() — real Trump post analysis (when backend is connected)
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -343,6 +397,7 @@ function classifyNews(h){
 
 let lastArbSignal=0;
 function checkArbSignal(asset,price){
+  if(botConnected)return; // Bot is running — it handles arb signals
   if(Date.now()-lastArbSignal<5000)return; // max 1 signal per 5s
   // Simulate Kalshi contract that lags behind Binance
   const lag=Math.random()*0.003; // 0-0.3% lag
@@ -383,6 +438,7 @@ function checkArbSignal(asset,price){
 }
 
 function generateNewsSignal(headline,pri){
+  if(botConnected)return; // Bot is running — it handles news signals
   const t=headline.toLowerCase();
   let actions=[];
   if(t.includes('rate cut')||t.includes('bitcoin')||t.includes('crypto')){
@@ -447,7 +503,7 @@ function render(){
     ['TODAY P&L',fmt(todayPnl),closedTrades.length+' closed trades',todayPnl>=0?'green':'red'],
     ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
     ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
-    ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
+    ['NEWS',newsItems.length+' items',botConnected?'Bot connected':'Scanning live sources','amber'],
   ].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
 
   // Big P&L display
@@ -545,8 +601,8 @@ function render(){
   ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
 }
 
-// ═══ BOOT v4.7 ═══
-console.log('Dashboard v4.7 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
+// ═══ BOOT v5.0 ═══
+console.log('Dashboard v5.0 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
 tryBinanceWS();             // Try WebSocket first (fastest)
 setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
   if(!btcPrice)tryBinanceREST();

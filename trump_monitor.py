@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import random as _random
+
 import httpx
 
 import config
@@ -67,17 +69,44 @@ class TrumpMonitor:
         # Update these as accounts come and go
     ]
 
+    # Nitter instances that mirror Truth Social content via RSS
+    NITTER_INSTANCES = [
+        "https://nitter.privacydev.net/realDonaldTrump/rss",
+        "https://nitter.poast.org/realDonaldTrump/rss",
+        "https://nitter.cz/realDonaldTrump/rss",
+    ]
+
+    # Rotating User-Agent strings to avoid rate limiting
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    ]
+
     def __init__(self) -> None:
         self._post_queue: asyncio.Queue[TrumpPost] = asyncio.Queue()
         self._running = False
         self._seen_hashes: set[str] = set()
+        self._ua_index = 0
         self._http = httpx.AsyncClient(
             timeout=5.0,
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"},
+            headers={"User-Agent": self._next_user_agent()},
         )
         self._poll_interval = float(config.TRUMP_POLL_INTERVAL_SECONDS)
         self._last_post_time: float = time.time()
+
+    def _next_user_agent(self) -> str:
+        """Return the next User-Agent string in the rotation."""
+        ua = self.USER_AGENTS[self._ua_index % len(self.USER_AGENTS)]
+        self._ua_index += 1
+        return ua
+
+    def _rotate_user_agent(self) -> None:
+        """Rotate the User-Agent header on the HTTP client."""
+        self._http.headers["User-Agent"] = self._next_user_agent()
 
     @property
     def post_queue(self) -> asyncio.Queue[TrumpPost]:
@@ -97,6 +126,8 @@ class TrumpMonitor:
             tasks = [
                 asyncio.create_task(self._poll_truth_social(), name="truthsocial"),
                 asyncio.create_task(self._poll_rss(), name="rss"),
+                asyncio.create_task(self._poll_nitter(), name="nitter"),
+                asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
             ]
             await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
@@ -193,7 +224,7 @@ class TrumpMonitor:
                 logger.debug("RSS poll error: %s", exc)
 
             # RSS is slower, poll less frequently
-            await asyncio.sleep(self._poll_interval * 3)
+            await asyncio.sleep(self._poll_interval * 2)
 
     def _parse_rss(self, xml_text: str) -> list[TrumpPost]:
         """Parse RSS XML for Trump posts (simple regex parser for speed)."""
@@ -232,6 +263,77 @@ class TrumpMonitor:
             ))
         return posts
 
+    # --- Nitter Instance Polling ---
+
+    async def _poll_nitter(self) -> None:
+        """Poll multiple Nitter instances in sequence for Trump posts.
+
+        Nitter mirrors repost Truth Social content as RSS feeds.
+        Tries each instance in order; on success, parses with _parse_rss().
+        """
+        while self._running:
+            for nitter_url in self.NITTER_INSTANCES:
+                try:
+                    self._rotate_user_agent()
+                    resp = await self._http.get(nitter_url)
+                    if resp.status_code == 200:
+                        posts = self._parse_rss(resp.text)
+                        for post in posts:
+                            # Re-tag source so we know it came from Nitter
+                            post.source = "nitter"
+                            if post.text_hash not in self._seen_hashes:
+                                self._seen_hashes.add(post.text_hash)
+                                await self._post_queue.put(post)
+                                logger.info(
+                                    "NEW POST detected (Nitter %s): %s... [latency=%dms]",
+                                    nitter_url.split("/")[2],
+                                    post.text[:80],
+                                    post.detection_latency_ms,
+                                )
+                        # Got a successful response — no need to try more instances
+                        break
+                    else:
+                        logger.debug(
+                            "Nitter %s returned %d, trying next instance",
+                            nitter_url.split("/")[2],
+                            resp.status_code,
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Nitter %s error: %s, trying next instance",
+                        nitter_url.split("/")[2],
+                        exc,
+                    )
+
+            await asyncio.sleep(self._poll_interval * 2)
+
+    # --- Truth Social Atom Feed Polling ---
+
+    async def _poll_truth_atom(self) -> None:
+        """Poll the alternative Truth Social Atom/RSS endpoint."""
+        atom_url = f"https://truthsocial.com/@{self.TRUMP_TS_USERNAME}.rss"
+
+        while self._running:
+            try:
+                self._rotate_user_agent()
+                resp = await self._http.get(atom_url)
+                if resp.status_code == 200:
+                    posts = self._parse_rss(resp.text)
+                    for post in posts:
+                        post.source = "truth_atom"
+                        if post.text_hash not in self._seen_hashes:
+                            self._seen_hashes.add(post.text_hash)
+                            await self._post_queue.put(post)
+                            logger.info(
+                                "NEW POST detected (TruthAtom): %s... [latency=%dms]",
+                                post.text[:80],
+                                post.detection_latency_ms,
+                            )
+            except Exception as exc:
+                logger.debug("Truth Atom poll error: %s", exc)
+
+            await asyncio.sleep(self._poll_interval * 2)
+
     # --- Paper Mode ---
 
     async def _run_paper_mode(self) -> None:
@@ -260,8 +362,8 @@ class TrumpMonitor:
         ]
 
         while self._running:
-            # Simulate a post every 30-120 seconds in paper mode
-            await asyncio.sleep(random.uniform(30, 90))
+            # Simulate a post every 15-45 seconds in paper mode
+            await asyncio.sleep(random.uniform(15, 45))
             if not self._running:
                 break
 

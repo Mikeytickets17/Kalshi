@@ -20,6 +20,7 @@ import time
 from typing import Optional
 
 import config
+import shared_state
 from exchange import BinanceExecutor, TradeResult
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
@@ -90,6 +91,9 @@ class LatencyArbBot:
         self._stock_trader = StockTrader()
         self._news_positions: list[dict] = []
 
+        # Initialize shared state for the dashboard
+        shared_state.init(self._portfolio_value)
+
         logger.info(
             "LatencyArbBot initialized: paper=%s portfolio=$%.2f",
             self._paper_mode, self._portfolio_value,
@@ -125,6 +129,8 @@ class LatencyArbBot:
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
             asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
+            # State persistence for dashboard
+            asyncio.create_task(self._state_flusher(), name="state_flush"),
         ]
 
         try:
@@ -140,10 +146,20 @@ class LatencyArbBot:
                 if not task.done():
                     task.cancel()
 
+    async def _state_flusher(self) -> None:
+        """Periodically flush shared state to disk for the dashboard."""
+        while self._running:
+            try:
+                shared_state.periodic_flush()
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+
     async def shutdown(self, reason: str = "Manual shutdown") -> None:
         if not self._running:
             return
         self._running = False
+        shared_state.set_bot_running(False)
         logger.info("Shutting down: %s", reason)
 
         self._kalshi.cancel_all()
@@ -266,6 +282,25 @@ class LatencyArbBot:
             evaluation, size_usdc, kalshi_result.filled_price or evaluation.target_price
         )
 
+        # Record to shared state for dashboard
+        shared_state.record_trade_opened(
+            trade_id=opp.market_id,
+            strategy="ARB",
+            side=evaluation.side.value,
+            asset=opp.asset,
+            venue="Kalshi",
+            entry_price=kalshi_result.filled_price or evaluation.target_price,
+            size_usd=size_usdc,
+            confidence=opp.edge,
+            reason=f"CEX ${opp.cex_price:.0f} vs strike ${opp.contract_strike:.0f} ({opp.edge*100:.1f}% edge)",
+        )
+        shared_state.record_signal(
+            strategy="ARB", side=evaluation.side.value, asset=opp.asset,
+            venue="Kalshi", confidence=opp.edge,
+            reason=f"Edge {opp.edge*100:.1f}% latency={opp.latency_ms:.0f}ms",
+            action="TRADED",
+        )
+
         logger.info(
             "TRADED: %s %s $%.2f @ %.4f edge=%.1f%% (pos %d/%d)",
             evaluation.side.value, ticker, size_usdc,
@@ -339,6 +374,15 @@ class LatencyArbBot:
 
         self._notifier.notify_trade_closed(position, pnl, reason)
 
+        # Record to shared state for dashboard
+        shared_state.record_trade_closed(
+            trade_id=market_id,
+            pnl=pnl,
+            exit_price=position.current_price,
+            reason=reason,
+        )
+        shared_state.update_portfolio(self._portfolio_value)
+
         wr = self._win_count / max(self._trade_count, 1) * 100
         logger.info(
             "%s %s pnl=$%+.2f (total: %d trades, %.1f%% WR, portfolio=$%.2f)",
@@ -364,6 +408,11 @@ class LatencyArbBot:
                 logger.info(
                     "TRUMP POST: %s... [source=%s]",
                     post.text[:80], post.source,
+                )
+
+                # Record trump post to shared state for dashboard
+                shared_state.record_trump_post(
+                    text=post.text, source=post.source,
                 )
 
                 # Analyze sentiment with Claude (or rule-based fallback)
@@ -439,6 +488,25 @@ class LatencyArbBot:
                         "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
                     })
 
+                    trade_id = f"trump-btc-{int(time.time()*1000)}"
+                    self._trump_positions[-1]["trade_id"] = trade_id
+                    shared_state.record_trade_opened(
+                        trade_id=trade_id,
+                        strategy="TRUMP",
+                        side=result.side,
+                        asset="BTC",
+                        venue="Binance",
+                        entry_price=result.filled_price,
+                        size_usd=result.filled_usd,
+                        confidence=sentiment.confidence,
+                        reason=post.text[:80],
+                    )
+                    shared_state.record_trump_post(
+                        text=post.text, source=post.source,
+                        sentiment=sentiment.direction,
+                        confidence=sentiment.confidence,
+                    )
+
                     logger.info(
                         "TRUMP BTC TRADE: %s BTC $%.2f @ $%.2f (conf=%.2f, expected=%.1f%%, exec=%dms)",
                         result.side, result.filled_usd, result.filled_price,
@@ -478,6 +546,20 @@ class LatencyArbBot:
                                 "ticker": match.ticker,
                                 "type": "kalshi_contract",
                             })
+                            kalshi_trade_id = f"trump-k-{int(time.time()*1000)}"
+                            self._trump_positions[-1]["trade_id"] = kalshi_trade_id
+                            shared_state.record_trade_opened(
+                                trade_id=kalshi_trade_id,
+                                strategy="TRUMP",
+                                side=match.side,
+                                asset=match.ticker,
+                                venue="Kalshi",
+                                entry_price=order.filled_price,
+                                size_usd=order.filled_size,
+                                confidence=match.confidence,
+                                reason=f"Contract match: {match.keywords_matched}",
+                            )
+
                             logger.info(
                                 "TRUMP KALSHI TRADE: %s %s $%.2f @ %.2f (match=%.0f%%, conf=%.2f, kw=%s)",
                                 match.side, match.ticker, contract_size, order.filled_price,
@@ -515,6 +597,16 @@ class LatencyArbBot:
                             self._available_balance += tp["size_usd"] + pnl
                             self._portfolio_value += pnl
                             self._risk_manager.record_trade_result(pnl, source_wallet="trump_news")
+
+                            # Record to shared state
+                            trade_id = tp.get("trade_id", f"trump-exit-{int(time.time()*1000)}")
+                            shared_state.record_trade_closed(
+                                trade_id=trade_id,
+                                pnl=pnl,
+                                exit_price=result.filled_price,
+                                reason=f"Hold period expired ({config.TRUMP_HOLD_MINUTES}m)",
+                            )
+                            shared_state.update_portfolio(self._portfolio_value)
 
                             logger.info(
                                 "TRUMP EXIT: %s BTC pnl=$%+.2f (entry=$%.2f exit=$%.2f held=%dm)",
@@ -607,6 +699,7 @@ class LatencyArbBot:
                 else:
                     result = self._exchange.sell(action.asset, size)
                 if result.success:
+                    news_tid = f"news-bin-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -617,7 +710,15 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": news_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=news_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Binance",
+                        entry_price=result.filled_price, size_usd=size,
+                        confidence=action.confidence, reason=news.headline[:80],
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
                     logger.info(
                         "NEWS TRADE: %s %s $%.2f on Binance (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
@@ -630,6 +731,7 @@ class LatencyArbBot:
                 else:
                     result = self._stock_trader.sell(action.asset, size)
                 if result.success:
+                    stock_tid = f"news-alp-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -640,7 +742,15 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": stock_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=stock_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Alpaca",
+                        entry_price=result.filled_price, size_usd=size,
+                        confidence=action.confidence, reason=news.headline[:80],
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
                     logger.info(
                         "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
@@ -649,7 +759,6 @@ class LatencyArbBot:
 
             elif action.venue == "kalshi_contract" and action.kalshi_keywords:
                 from contract_matcher import ContractMatch
-                # Search Kalshi for matching contracts
                 matches = self._contract_matcher.find_matches(
                     type("S", (), {
                         "kalshi_keywords": action.kalshi_keywords,
@@ -660,6 +769,7 @@ class LatencyArbBot:
                 for match in matches[:1]:
                     order = self._contract_matcher.execute_match(match, size)
                     if order and order.success:
+                        kalshi_tid = f"news-kal-{int(time.time()*1000)}"
                         self._trade_count += 1
                         self._news_positions.append({
                             "entry_time": time.time(),
@@ -670,7 +780,15 @@ class LatencyArbBot:
                             "entry_price": order.filled_price,
                             "hold_until": time.time() + action.hold_minutes * 60,
                             "headline": news.headline[:80],
+                            "trade_id": kalshi_tid,
                         })
+                        shared_state.record_trade_opened(
+                            trade_id=kalshi_tid, strategy="NEWS", side=match.side,
+                            asset=match.ticker, venue="Kalshi",
+                            entry_price=order.filled_price, size_usd=size,
+                            confidence=action.confidence, reason=news.headline[:80],
+                        )
+                        shared_state.record_news(news.headline, news.source, news.priority, news.category)
                         logger.info(
                             "KALSHI TRADE: %s %s $%.2f (matched=%s, conf=%.2f)",
                             match.side, match.ticker, size, match.keywords_matched, action.confidence,
@@ -678,13 +796,13 @@ class LatencyArbBot:
                         return True
 
             elif action.venue == "binance_futures":
-                # Futures with leverage
                 leveraged_size = size * action.leverage
                 if action.side in ("LONG", "BUY"):
                     result = self._exchange.buy(action.asset, leveraged_size)
                 else:
                     result = self._exchange.sell(action.asset, leveraged_size)
                 if result.success:
+                    fut_tid = f"news-fut-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -697,7 +815,15 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": fut_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=fut_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Binance Futures",
+                        entry_price=result.filled_price, size_usd=leveraged_size,
+                        confidence=action.confidence, reason=f"{action.leverage}x leverage: {news.headline[:60]}",
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
                     logger.info(
                         "FUTURES TRADE: %s %s $%.2f (%dx leverage, margin=$%.2f, conf=%.2f)",
                         action.side, action.asset, leveraged_size, action.leverage,
@@ -735,6 +861,15 @@ class LatencyArbBot:
                         self._available_balance += size + pnl
                         self._portfolio_value += pnl
                         self._risk_manager.record_trade_result(pnl, source_wallet=venue)
+
+                        # Record to shared state
+                        news_trade_id = pos.get("trade_id", f"news-exit-{int(time.time()*1000)}")
+                        shared_state.record_trade_closed(
+                            trade_id=news_trade_id,
+                            pnl=pnl,
+                            reason=f"Hold expired: {pos.get('headline', '')[:40]}",
+                        )
+                        shared_state.update_portfolio(self._portfolio_value)
 
                         logger.info(
                             "NEWS EXIT: %s %s %s pnl=$%+.2f (held %dm, headline=%s)",
