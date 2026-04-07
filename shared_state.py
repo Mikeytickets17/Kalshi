@@ -36,6 +36,8 @@ _state: dict[str, Any] = {
     "trump_posts": [],
     "news_items": [],
     "risk": {},
+    "whale_signals": [],
+    "whale_copies": [],
     "start_time": time.time(),
     "last_updated": time.time(),
     "bot_running": False,
@@ -226,6 +228,25 @@ def record_news(headline: str, source: str, priority: str, category: str = "") -
         _state["news_items"].insert(0, item)
         if len(_state["news_items"]) > 30:
             _state["news_items"] = _state["news_items"][:30]
+        _state["last_updated"] = time.time()
+    _persist()
+
+
+def record_whale_signal(signal_data: dict) -> None:
+    """Record a detected whale activity signal."""
+    with _lock:
+        _state["whale_signals"].insert(0, signal_data)
+        if len(_state["whale_signals"]) > 50:
+            _state["whale_signals"] = _state["whale_signals"][:50]
+        _state["last_updated"] = time.time()
+
+
+def record_whale_copy(copy_data: dict) -> None:
+    """Record a whale copy trade."""
+    with _lock:
+        _state["whale_copies"].insert(0, copy_data)
+        if len(_state["whale_copies"]) > 30:
+            _state["whale_copies"] = _state["whale_copies"][:30]
         _state["last_updated"] = time.time()
     _persist()
 

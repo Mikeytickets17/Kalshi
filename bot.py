@@ -34,6 +34,7 @@ from price_feed import PriceFeed
 from risk_manager import RiskManager
 from signal_evaluator import EvaluationResult, SignalEvaluator
 from stock_trader import StockTrader
+from whale_tracker import WhaleTracker, WhaleSignal
 
 # --- Logging Setup ---
 
@@ -91,6 +92,9 @@ class LatencyArbBot:
         self._stock_trader = StockTrader()
         self._news_positions: list[dict] = []
 
+        # Components — Whale Tracker (copy top Kalshi traders)
+        self._whale_tracker = WhaleTracker(self._kalshi)
+
         # Initialize shared state for the dashboard
         shared_state.init(self._portfolio_value)
 
@@ -135,6 +139,9 @@ class LatencyArbBot:
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
             asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
+            # Strategy 5: Whale Tracker (copy smart money on Kalshi)
+            asyncio.create_task(self._whale_tracker.start(), name="whale_tracker"),
+            asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
             # Daily Telegram summary
@@ -964,6 +971,91 @@ class LatencyArbBot:
             except Exception as exc:
                 logger.error("News exit error: %s", exc, exc_info=True)
                 await asyncio.sleep(5)
+
+    # --- Strategy 5: Whale Copy Trading ---
+
+    async def _whale_copy_processor(self) -> None:
+        """Copy trades when whale activity is detected on Kalshi."""
+        logger.info("Whale copy processor started — following smart money")
+        while self._running:
+            try:
+                try:
+                    signal = await asyncio.wait_for(
+                        self._whale_tracker.signal_queue.get(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                # Only copy high-confidence whale signals
+                if signal.confidence < 0.60:
+                    logger.debug("Whale signal below threshold: %s %.2f", signal.ticker, signal.confidence)
+                    continue
+
+                # Check risk
+                can_trade, risk_reason = self._risk_manager.check_can_trade(
+                    self._portfolio_value, self._active_positions,
+                    proposed_category="whale_copy",
+                )
+                if not can_trade:
+                    logger.warning("Risk blocked whale copy: %s", risk_reason)
+                    continue
+
+                # Size based on whale magnitude and confidence
+                size = min(
+                    self._portfolio_value * 0.04 * signal.confidence,
+                    config.MAX_TRADE_SIZE_USDC,
+                )
+                if size < config.MIN_TRADE_SIZE_USDC or size > self._available_balance:
+                    continue
+
+                # Execute the copy trade on Kalshi
+                order = self._kalshi.place_order(
+                    ticker=signal.ticker,
+                    side=signal.direction,
+                    size_usd=size,
+                    price=signal.current_price,
+                )
+
+                if order.success:
+                    trade_id = f"whale-{int(time.time()*1000)}"
+                    self._trade_count += 1
+                    self._available_balance -= size
+
+                    # Record to shared state
+                    shared_state.record_trade_opened(
+                        trade_id=trade_id, strategy="WHALE",
+                        side=signal.direction, asset=signal.ticker,
+                        venue="Kalshi", entry_price=order.filled_price,
+                        size_usd=size, confidence=signal.confidence,
+                        reason=f"Whale {signal.signal_type}: {signal.details[:60]}",
+                    )
+                    shared_state.record_signal(
+                        strategy="WHALE", side=signal.direction,
+                        asset=signal.ticker, venue="Kalshi",
+                        confidence=signal.confidence,
+                        reason=f"{signal.signal_type} {signal.magnitude:.1f}x on {signal.title[:40]}",
+                        action="COPIED",
+                    )
+
+                    # Record in whale tracker
+                    self._whale_tracker.record_copy_trade(signal, size, order.filled_price)
+
+                    self._notifier.notify_news_trade(
+                        side=signal.direction, asset=signal.ticker,
+                        venue="Kalshi", size_usd=size,
+                        entry_price=order.filled_price,
+                        confidence=signal.confidence,
+                        headline=f"WHALE COPY: {signal.signal_type} {signal.magnitude:.1f}x — {signal.title[:60]}",
+                    )
+
+                    logger.info(
+                        "WHALE COPY: %s %s $%.2f @ %.4f (%s %.1fx, conf=%.2f)",
+                        signal.direction, signal.ticker, size, order.filled_price,
+                        signal.signal_type, signal.magnitude, signal.confidence,
+                    )
+
+            except Exception as exc:
+                logger.error("Whale copy error: %s", exc, exc_info=True)
 
 
 async def main() -> None:
