@@ -68,7 +68,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="wrap">
 <div class="row r6" id="stats"></div>
 <div class="row r2">
-<div class="card"><div class="card-h"><span>CEX Price Feeds — REAL-TIME</span><span class="live-dot"><span class="pulse"></span>Binance WebSocket</span></div><div class="card-b" id="cex"></div></div>
+<div class="card"><div class="card-h"><span>CEX Price Feeds — REAL-TIME</span><span class="live-dot"><span class="pulse"></span><span id="price-src">Connecting...</span></span></div><div class="card-b" id="cex"></div></div>
 <div class="card"><div class="card-h"><span>BTC Price Chart (Live)</span><span style="color:var(--muted);font-size:9px" id="chart-range"></span></div><div class="card-b"><div class="chart" id="chart"></div></div></div>
 </div>
 <div class="row r2">
@@ -93,58 +93,99 @@ let btcHistory=[];
 let signals=[];
 let newsItems=[];
 let tradeCount=0,winCount=0,totalPnl=0;
-let wsConnected=false;
+let priceSource='loading';
 
-// ── FETCH PRICES IMMEDIATELY via REST (no waiting) ──
-async function fetchPricesNow(){
-  try{
-    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
-    const d=await r.json();
-    d.forEach(t=>{
-      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice||parseFloat(t.price);btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);}
-      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice||parseFloat(t.price);ethPrice=parseFloat(t.price);}
-    });
-    render();
-  }catch(e){
-    // If Binance blocked, try CoinGecko
-    try{
-      const r2=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
-      const d2=await r2.json();
-      if(d2.bitcoin){btcPrev=btcPrice||d2.bitcoin.usd;btcPrice=d2.bitcoin.usd;btcHistory.push(btcPrice);}
-      if(d2.ethereum){ethPrev=ethPrice||d2.ethereum.usd;ethPrice=d2.ethereum.usd;}
-      render();
-    }catch(e2){}
-  }
-}
+// ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
-// ── KEEP POLLING REST every 2 seconds as reliable baseline ──
-async function pollPrices(){
-  try{
-    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
-    const d=await r.json();
-    d.forEach(t=>{
-      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice;btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',btcPrice);}
-      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice;ethPrice=parseFloat(t.price);checkArbSignal('ETH',ethPrice);}
-    });
-  }catch(e){}
-  if(!wsConnected)setTimeout(pollPrices,2000);
-}
-
-// ── UPGRADE TO WEBSOCKET if possible (faster updates) ──
-function connectBinance(){
+// Source 1: Binance WebSocket (fastest — streams every trade)
+function tryBinanceWS(){
   try{
     const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade/ethusdt@trade');
-    ws.onopen=()=>{wsConnected=true;};
+    const timeout=setTimeout(()=>{ws.close()},5000); // give up after 5s
+    ws.onopen=()=>{clearTimeout(timeout);priceSource='Binance WebSocket (streaming)';};
     ws.onmessage=(e)=>{
       const d=JSON.parse(e.data);
       const p=parseFloat(d.p);
       if(d.s==='BTCUSDT'){btcPrev=btcPrice;btcPrice=p;btcHistory.push(p);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',p);}
       if(d.s==='ETHUSDT'){ethPrev=ethPrice;ethPrice=p;checkArbSignal('ETH',p);}
     };
-    ws.onclose=()=>{wsConnected=false;pollPrices();setTimeout(connectBinance,10000);};
-    ws.onerror=()=>{ws.close();};
+    ws.onclose=()=>{if(priceSource.includes('WebSocket')){priceSource='reconnecting';setTimeout(tryBinanceWS,5000);}};
+    ws.onerror=()=>{clearTimeout(timeout);ws.close();if(!btcPrice)tryBinanceREST();};
+  }catch(e){tryBinanceREST();}
+}
+
+// Source 2: Binance REST API (works if CORS allows)
+async function tryBinanceREST(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    d.forEach(t=>{
+      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice||parseFloat(t.price);btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);}
+      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice||parseFloat(t.price);ethPrice=parseFloat(t.price);}
+    });
+    priceSource='Binance REST (polling 3s)';
+    render();
+    setInterval(async()=>{
+      try{
+        const r2=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
+        const d2=await r2.json();
+        d2.forEach(t=>{
+          if(t.symbol==='BTCUSDT'){btcPrev=btcPrice;btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',btcPrice);}
+          if(t.symbol==='ETHUSDT'){ethPrev=ethPrice;ethPrice=parseFloat(t.price);checkArbSignal('ETH',ethPrice);}
+        });
+      }catch(e){}
+    },3000);
+  }catch(e){tryCoinGecko();}
+}
+
+// Source 3: CoinGecko (free, CORS-friendly, but slower)
+async function tryCoinGecko(){
+  try{
+    const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    btcPrev=btcPrice||d.bitcoin.usd;btcPrice=d.bitcoin.usd;btcHistory.push(btcPrice);
+    ethPrev=ethPrice||d.ethereum.usd;ethPrice=d.ethereum.usd;
+    priceSource='CoinGecko API (polling 10s)';
+    render();
+    setInterval(async()=>{
+      try{
+        const r2=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
+        const d2=await r2.json();
+        btcPrev=btcPrice;btcPrice=d2.bitcoin.usd;btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();
+        ethPrev=ethPrice;ethPrice=d2.ethereum.usd;
+        checkArbSignal('BTC',btcPrice);checkArbSignal('ETH',ethPrice);
+      }catch(e){}
+    },10000);
+  }catch(e){tryCryptoCompare();}
+}
+
+// Source 4: CryptoCompare (another CORS-friendly fallback)
+async function tryCryptoCompare(){
+  try{
+    const r=await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    btcPrev=btcPrice||d.BTC.USD;btcPrice=d.BTC.USD;btcHistory.push(btcPrice);
+    ethPrev=ethPrice||d.ETH.USD;ethPrice=d.ETH.USD;
+    priceSource='CryptoCompare API (polling 5s)';
+    render();
+    setInterval(async()=>{
+      try{
+        const r2=await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD');
+        const d2=await r2.json();
+        btcPrev=btcPrice;btcPrice=d2.BTC.USD;btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();
+        ethPrev=ethPrice;ethPrice=d2.ETH.USD;
+        checkArbSignal('BTC',btcPrice);checkArbSignal('ETH',ethPrice);
+      }catch(e){}
+    },5000);
   }catch(e){
-    wsConnected=false;
+    // All sources failed — use last known or placeholder
+    priceSource='Offline (cached)';
+    btcPrice=btcPrice||83500;ethPrice=ethPrice||1800;
+    btcHistory.push(btcPrice);
+    render();
   }
 }
 
@@ -282,21 +323,21 @@ function render(){
   // Stats
   $('stats').innerHTML=[
     ['PORTFOLIO','$'+portfolio.toFixed(2),fmt(totalPnl)+' ('+(totalPnl/100).toFixed(1)+'%)',totalPnl>=0?'green':'red'],
-    ['BTC PRICE',btcPrice?'$'+btcPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...','$'+Math.abs(btcPrice-btcPrev).toFixed(2)+' '+(wsConnected?'(WS)':'(REST)'),btcPrice>=btcPrev?'green':'red'],
-    ['ETH PRICE',ethPrice?'$'+ethPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...','$'+Math.abs(ethPrice-ethPrev).toFixed(2)+' '+(wsConnected?'(WS)':'(REST)'),ethPrice>=ethPrev?'green':'red'],
+    ['BTC PRICE',btcPrice?'$'+btcPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...',(btcPrice-btcPrev>=0?'▲ +':'▼ ')+'$'+Math.abs(btcPrice-btcPrev).toFixed(2),btcPrice>=btcPrev?'green':'red'],
+    ['ETH PRICE',ethPrice?'$'+ethPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...',(ethPrice-ethPrev>=0?'▲ +':'▼ ')+'$'+Math.abs(ethPrice-ethPrev).toFixed(2),ethPrice>=ethPrev?'green':'red'],
     ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
     ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
     ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
   ].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
 
   // CEX
+  $('price-src').textContent=priceSource;
   $('cex').innerHTML=[
     {a:'BTC',p:btcPrice,prev:btcPrev},
     {a:'ETH',p:ethPrice,prev:ethPrev}
   ].map(c=>{
     const chg=c.p-c.prev;const col=chg>=0?'var(--green)':'var(--red)';
-    const src=wsConnected?'Binance WebSocket (streaming)':'Binance REST API (polling 2s)';
-    return '<div class="cex"><b>'+c.a+'</b><span class="p" style="color:'+col+'">$'+(c.p?c.p.toLocaleString(undefined,{minimumFractionDigits:2}):'Loading...')+'</span><small>Change: '+(chg>=0?'+':'')+chg.toFixed(2)+' | '+src+'</small></div>';
+    return '<div class="cex"><b>'+c.a+'</b><span class="p" style="color:'+col+'">$'+(c.p?c.p.toLocaleString(undefined,{minimumFractionDigits:2}):'Loading...')+'</span><small>Change: '+(chg>=0?'+':'')+chg.toFixed(2)+' | Source: '+priceSource+'</small></div>';
   }).join('');
 
   // Chart
@@ -350,10 +391,11 @@ function render(){
   ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
 }
 
-// ═══ BOOT — prices load instantly, no waiting ═══
-fetchPricesNow();           // REST API — loads in <500ms
-pollPrices();               // Keep polling as baseline
-connectBinance();           // Try WebSocket upgrade in background
+// ═══ BOOT — cascade through price sources until one works ═══
+tryBinanceWS();             // Try WebSocket first (fastest)
+setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
+  if(!btcPrice)tryBinanceREST();
+},3000);
 fetchNews();                // Load real news headlines
 setInterval(render,1000);
 render();
