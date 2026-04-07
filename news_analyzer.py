@@ -131,12 +131,16 @@ class NewsAnalyzer:
     def __init__(self) -> None:
         self._api_key = config.ANTHROPIC_API_KEY
         self._http = httpx.AsyncClient(timeout=10.0)
-        self._enabled = bool(self._api_key)
+
+        # Use multi-provider AI system
+        from ai_provider import AIProvider
+        self._ai = AIProvider()
+        self._enabled = self._ai.is_ai_enabled
 
         if self._enabled:
-            logger.info("NewsAnalyzer initialized with Claude API")
+            logger.info("NewsAnalyzer initialized with AI: %s", self._ai.provider_name)
         else:
-            logger.info("NewsAnalyzer running in rule-based mode (no API key)")
+            logger.info("NewsAnalyzer running in rule-based mode (no AI keys)")
 
     async def analyze(self, news: NewsItem) -> list[TradeAction]:
         """Analyze a news item and return trade actions."""
@@ -155,7 +159,41 @@ class NewsAnalyzer:
         return actions
 
     async def _analyze_with_claude(self, news: NewsItem) -> list[TradeAction]:
-        """Use Claude API for complex analysis."""
+        """Use best available AI for analysis (Claude, Groq, Gemini, Ollama)."""
+        try:
+            prompt = ANALYSIS_PROMPT.format(
+                headline=news.headline[:300],
+                source=news.source,
+                category=news.category,
+            )
+            # Use multi-provider AI
+            analysis = await self._ai.analyze(prompt)
+            if analysis and "actions" in analysis:
+                actions = []
+                for a in analysis["actions"]:
+                    actions.append(TradeAction(
+                        venue=a.get("venue", "binance_spot"),
+                        asset=a.get("asset", "BTC"),
+                        side=a.get("side", "BUY"),
+                        confidence=float(a.get("confidence", 0.5)),
+                        size_pct=float(a.get("size_pct", 0.03)),
+                        leverage=float(a.get("leverage", 1)),
+                        hold_minutes=int(a.get("hold_minutes", 15)),
+                        reasoning=f"[{self._ai.provider_name}] {a.get('reasoning', '')}",
+                        category=news.category,
+                        urgency=a.get("urgency", "normal"),
+                        kalshi_keywords=a.get("kalshi_keywords", []),
+                        kalshi_side=a.get("kalshi_side", ""),
+                    ))
+                return actions
+            # If AI returned no actions, fall back to rules
+            return self._analyze_with_rules(news)
+        except Exception as exc:
+            logger.error("AI news analysis failed: %s", exc)
+            return self._analyze_with_rules(news)
+
+    async def _analyze_with_claude_legacy(self, news: NewsItem) -> list[TradeAction]:
+        """Legacy Claude-only method (kept for reference)."""
         try:
             prompt = ANALYSIS_PROMPT.format(
                 headline=news.headline[:300],

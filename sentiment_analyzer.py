@@ -96,24 +96,28 @@ Be aggressive on clear signals (conf 0.8+), conservative on vague posts (conf 0.
 
 
 class SentimentAnalyzer:
-    """Analyzes Trump posts using Claude API for BTC market impact."""
+    """Analyzes Trump posts using AI (Claude, Groq, Gemini, Ollama, or rules)."""
 
     def __init__(self) -> None:
         self._api_key = config.ANTHROPIC_API_KEY
         self._http = httpx.AsyncClient(timeout=10.0)
-        self._enabled = bool(self._api_key)
+
+        # Use the multi-provider AI system
+        from ai_provider import AIProvider
+        self._ai = AIProvider()
+        self._enabled = self._ai.is_ai_enabled
 
         if self._enabled:
-            logger.info("SentimentAnalyzer initialized with Claude API")
+            logger.info("SentimentAnalyzer initialized with AI: %s", self._ai.provider_name)
         else:
-            logger.info("SentimentAnalyzer running in rule-based mode (no API key)")
+            logger.info("SentimentAnalyzer running in rule-based mode (no AI keys)")
 
     async def analyze(self, post: TrumpPost) -> SentimentResult:
-        """Analyze a post for BTC market impact."""
+        """Analyze a post for market impact using best available AI."""
         start = time.time()
 
         if self._enabled:
-            result = await self._analyze_with_claude(post)
+            result = await self._analyze_with_ai(post)
         else:
             result = self._analyze_with_rules(post)
 
@@ -127,10 +131,36 @@ class SentimentAnalyzer:
         )
         return result
 
-    # --- Claude API Analysis ---
+    # --- Multi-Provider AI Analysis ---
+
+    async def _analyze_with_ai(self, post: TrumpPost) -> SentimentResult:
+        """Send post to best available AI provider (Claude, Groq, Gemini, Ollama)."""
+        prompt = ANALYSIS_PROMPT.format(text=post.text[:500])
+        try:
+            analysis = await self._ai.analyze(prompt)
+            if analysis:
+                return SentimentResult(
+                    post=post,
+                    is_market_relevant=analysis.get("relevant", False),
+                    direction=analysis.get("direction", "neutral").upper(),
+                    confidence=float(analysis.get("confidence", 0.0)),
+                    expected_move_pct=float(analysis.get("move_pct", 0.0)),
+                    reasoning=f"[{self._ai.provider_name}] {analysis.get('reasoning', '')}",
+                    analysis_time_ms=0,
+                    topics=analysis.get("topics", []),
+                    kalshi_keywords=analysis.get("kalshi_keywords", []),
+                    kalshi_side=analysis.get("kalshi_side", ""),
+                    kalshi_confidence=float(analysis.get("kalshi_confidence", 0.0)),
+                )
+        except Exception as exc:
+            logger.error("AI analysis failed (%s): %s", self._ai.provider_name, exc)
+
+        # Fallback to rules if AI fails
+        logger.info("Falling back to rule-based analysis")
+        return self._analyze_with_rules(post)
 
     async def _analyze_with_claude(self, post: TrumpPost) -> SentimentResult:
-        """Send post to Claude API for analysis."""
+        """Send post to Claude API for analysis (legacy, kept for compatibility)."""
         try:
             prompt = ANALYSIS_PROMPT.format(text=post.text[:500])
 

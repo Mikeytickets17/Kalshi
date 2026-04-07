@@ -45,8 +45,25 @@ TRUMP_SCALE_BY_CONFIDENCE: bool = os.getenv("TRUMP_SCALE_BY_CONFIDENCE", "true")
 TWITTER_BEARER_TOKEN: str = os.getenv("TWITTER_BEARER_TOKEN", "")
 TWITTER_TRUMP_USER_ID: str = os.getenv("TWITTER_TRUMP_USER_ID", "25073877")  # @realDonaldTrump
 
-# --- Claude API (for sentiment analysis) ---
+# --- AI Sentiment Analysis (uses first available, in priority order) ---
+# Option 1: Anthropic Claude (best quality, paid)
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+# Option 2: Groq (FREE tier — runs Llama 3.1 70B, fastest inference)
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+# Option 3: Google Gemini (FREE tier — 15 req/min)
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Option 4: Ollama (100% FREE — runs locally, no API key needed)
+OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.1")
+# Option 5: OpenRouter (some free models available)
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct:free")
+# If none set → falls back to built-in rule-based analysis
+
+# --- Brave Search API (FREE tier — real-time web search for breaking news) ---
+BRAVE_API_KEY: str = os.getenv("BRAVE_API_KEY", "")
 
 # --- Edge Detection (Kalshi latency arb) ---
 EDGE_THRESHOLD_PCT: float = float(os.getenv("EDGE_THRESHOLD_PCT", "0.03"))
