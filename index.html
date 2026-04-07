@@ -261,14 +261,32 @@ async function tryCryptoCompare(){
   }
 }
 
-// ── LIVE NEWS via multiple RSS-to-JSON services ──
+// ── LIVE NEWS from every source that works in a browser ──
 async function fetchNews(){
+  let loaded=0;
+
+  // Source 1: CryptoCompare news API (free, CORS-friendly, crypto focused)
+  try{
+    const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
+    if(r.ok){
+      const d=await r.json();
+      (d.Data||[]).slice(0,8).forEach(item=>{
+        const h=item.title;
+        if(!newsItems.find(n=>n.text===h)){
+          const pri=classifyNews(h);
+          newsItems.unshift({time:new Date(item.published_on*1000).toLocaleTimeString(),text:h,source:item.source||'Crypto',pri:pri.pri,col:pri.col});
+          loaded++;
+        }
+      });
+    }
+  }catch(e){}
+
+  // Source 2: RSS feeds via rss2json
   const feeds=[
     {name:'CNBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Fsearch.cnbc.com%2Frs%2Fsearch%2Fcombinedcms%2Fview.xml%3FpartnerId%3Dwrss01%26id%3D100003114'},
     {name:'Reuters',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.reuters.com%2Freuters%2FtopNews'},
     {name:'MarketWatch',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.marketwatch.com%2Fmarketwatch%2Ftopstories'},
-    {name:'BBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.bbci.co.uk%2Fnews%2Fbusiness%2Frss.xml'},
-    {name:'NYT',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Frss.nytimes.com%2Fservices%2Fxml%2Frss%2Fnyt%2FBusiness.xml'},
+    {name:'BBC Biz',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.bbci.co.uk%2Fnews%2Fbusiness%2Frss.xml'},
   ];
   for(const feed of feeds){
     try{
@@ -289,7 +307,44 @@ async function fetchNews(){
       }
     }catch(e){}
   }
-  setTimeout(fetchNews,30000);
+
+  // Source 3: CoinGecko trending/news (market movers)
+  try{
+    const r=await fetch('https://api.coingecko.com/api/v3/search/trending');
+    if(r.ok){
+      const d=await r.json();
+      (d.coins||[]).slice(0,3).forEach(c=>{
+        const h='Trending: '+c.item.name+' ('+c.item.symbol+') — rank #'+c.item.market_cap_rank;
+        if(!newsItems.find(n=>n.text===h)){
+          newsItems.unshift({time:new Date().toLocaleTimeString(),text:h,source:'CoinGecko',pri:'NEWS',col:'var(--cyan)'});
+          loaded++;
+        }
+      });
+    }
+  }catch(e){}
+
+  // Source 4: Fear & Greed Index
+  try{
+    const r=await fetch('https://api.alternative.me/fng/?limit=1');
+    if(r.ok){
+      const d=await r.json();
+      const fg=d.data[0];
+      const h='Crypto Fear & Greed Index: '+fg.value+' ('+fg.value_classification+')';
+      if(!newsItems.find(n=>n.text===h)){
+        const col=parseInt(fg.value)>60?'var(--green)':parseInt(fg.value)<40?'var(--red)':'var(--amber)';
+        newsItems.unshift({time:new Date().toLocaleTimeString(),text:h,source:'Alt.me',pri:'HIGH',col:col});
+        loaded++;
+      }
+    }
+  }catch(e){}
+
+  // Keep max items, generate signals from critical news
+  if(newsItems.length>30)newsItems.length=30;
+  newsItems.forEach(n=>{if(n.pri==='CRIT'&&!n._signaled){n._signaled=true;generateNewsSignal(n.text,n);}});
+
+  console.log('News loaded:',loaded,'items from all sources');
+  render();
+  setTimeout(fetchNews,20000); // refresh every 20 seconds
 }
 
 function classifyNews(h){
