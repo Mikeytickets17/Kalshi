@@ -405,86 +405,12 @@ function classifyNews(h){
 
 // ── TRADE SIGNAL GENERATION (runs on live data) ──
 
-let lastArbSignal=0;
-function checkArbSignal(asset,price){
-  if(botConnected)return; // Bot is running — it handles arb signals
-  if(Date.now()-lastArbSignal<5000)return; // max 1 signal per 5s
-  // Simulate Kalshi contract that lags behind Binance
-  const lag=Math.random()*0.003; // 0-0.3% lag
-  const contractPrice=price*(1-lag*(Math.random()>0.5?1:-1));
-  const edge=Math.abs(price-contractPrice)/price;
-  if(edge>0.002){ // >0.2% divergence in real-time
-    const side=price>contractPrice?'YES':'NO';
-    const conf=Math.min(edge*20,0.95);
-    const size=Math.min(300,portfolio*0.03);
-    const won=Math.random()<0.9;
-    const pnl=won?(edge*size):(edge*size*-3);
-    // Open position first, close after hold time
-    const posId='arb-'+Date.now();
-    activePositions.push({id:posId,time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',entry:contractPrice.toFixed(2),size:size,unrealizedPnl:0,openedAt:Date.now()});
-    // Schedule close after 15-60 seconds (simulating contract resolution)
-    setTimeout(()=>{
-      const idx=activePositions.findIndex(p=>p.id===posId);
-      if(idx>=0)activePositions.splice(idx,1);
-      totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-      tradeCount++;if(won)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-      if(closedTrades.length>100)closedTrades.pop();
-    },Math.random()*45000+15000);
-    signals.unshift({
-      time:new Date().toLocaleTimeString(),
-      strat:'ARB',side:side,
-      asset:asset+'-UP-'+Math.round(contractPrice),
-      venue:'Kalshi',
-      reason:'CEX $'+price.toFixed(0)+' vs contract $'+contractPrice.toFixed(0)+' ('+((edge)*100).toFixed(2)+'% edge)',
-      conf:conf,
-      pnl:pnl,
-      size:size,
-      entryPrice:price
-    });
-    if(signals.length>20)signals.pop();
-    lastArbSignal=Date.now();
-  }
-}
-
-function generateNewsSignal(headline,pri){
-  if(botConnected)return; // Bot is running — it handles news signals
-  const t=headline.toLowerCase();
-  let actions=[];
-  if(t.includes('rate cut')||t.includes('bitcoin')||t.includes('crypto')){
-    actions.push({strat:'NEWS',side:'BUY',asset:'BTC',venue:'Binance',reason:headline.substring(0,50)+'...',conf:0.75});
-    actions.push({strat:'NEWS',side:'BUY',asset:'SPY',venue:'Alpaca',reason:'Risk-on from: '+headline.substring(0,40),conf:0.65});
-  }
-  if(t.includes('tariff')||t.includes('trade war')){
-    actions.push({strat:'NEWS',side:'SELL',asset:'BTC',venue:'Binance',reason:headline.substring(0,50)+'...',conf:0.70});
-    actions.push({strat:'NEWS',side:'SELL',asset:'SPY',venue:'Alpaca',reason:'Risk-off: '+headline.substring(0,40),conf:0.70});
-    actions.push({strat:'KALSHI',side:'YES',asset:'TARIFF-CONTRACT',venue:'Kalshi',reason:'Tariff contract match',conf:0.80});
-  }
-  if(t.includes('earnings')||t.includes('beat')){
-    actions.push({strat:'NEWS',side:'BUY',asset:'QQQ',venue:'Alpaca',reason:headline.substring(0,50),conf:0.60});
-  }
-  actions.forEach(a=>{
-    a.time=new Date().toLocaleTimeString();
-    const size=Math.min(250,portfolio*0.04);
-    const won=Math.random()<0.72;
-    const pnl=won?(size*Math.random()*0.04):(-size*Math.random()*0.02);
-    a.pnl=pnl;a.size=size;
-    signals.unshift(a);
-    // Open as active position first
-    const posId='news-'+Date.now()+'-'+Math.random().toString(36).slice(2,6);
-    activePositions.push({id:posId,time:a.time,strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,entry:btcPrice?'$'+btcPrice.toFixed(0):'--',size:size,unrealizedPnl:0,openedAt:Date.now()});
-    // Close after 20-80 seconds (simulating hold period) → moves to closed trades
-    setTimeout(()=>{
-      const idx=activePositions.findIndex(p=>p.id===posId);
-      if(idx>=0)activePositions.splice(idx,1);
-      tradeCount++;if(won)winCount++;
-      totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-      if(closedTrades.length>100)closedTrades.pop();
-    },Math.random()*60000+20000);
-  });
-  if(signals.length>20)signals=signals.slice(0,20);
-}
+// ── NO FAKE TRADES — all trades come from the real bot backend only ──
+// The dashboard is a VIEWER. It does not generate trades.
+// checkArbSignal and generateNewsSignal are disabled.
+// Start the bot with ./start.sh to see real trades.
+function checkArbSignal(asset,price){}
+function generateNewsSignal(headline,pri){}
 
 // ── TRUMP MONITOR — waiting for real Truth Social posts from backend ──
 // No hardcoded fake posts. The Trump section shows real posts when the
@@ -557,12 +483,8 @@ function render(){
   pnlEl.textContent=(totalPnl>=0?'+':'')+totalPnl.toFixed(2);
   pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
 
-  // Active positions — update unrealized P&L with live prices
-  activePositions.forEach(p=>{
-    const age=(Date.now()-p.openedAt)/1000;
-    // Simulate unrealized P&L drifting based on time held
-    p.unrealizedPnl=p.size*(Math.random()-0.45)*0.02*Math.sqrt(age/30);
-  });
+  // Active positions — unrealized P&L comes from the bot, not simulated
+  // If bot is connected, positions already have real unrealized_pnl from shared_state
   $('active-count').textContent=activePositions.length+' open';
   $('active-table').innerHTML=activePositions.map(p=>{
     const sc='t-'+p.strat.toLowerCase();

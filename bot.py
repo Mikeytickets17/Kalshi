@@ -943,16 +943,23 @@ class LatencyArbBot:
                         venue = pos["venue"]
                         size = pos.get("margin", pos["size_usd"])
 
+                        # Execute exit and calculate REAL P&L from fill price
+                        exit_result = None
                         if venue == "binance" or venue == "binance_futures":
                             if pos["side"] in ("BUY", "LONG"):
-                                self._exchange.sell(pos["asset"], pos["size_usd"])
+                                exit_result = self._exchange.sell(pos["asset"], pos["size_usd"])
                             else:
-                                self._exchange.buy(pos["asset"], pos["size_usd"])
+                                exit_result = self._exchange.buy(pos["asset"], pos["size_usd"])
                         elif venue == "alpaca":
-                            self._stock_trader.close_position(pos["asset"])
+                            exit_result = self._stock_trader.close_position(pos["asset"])
 
-                        # Simulate P&L in paper mode
-                        pnl = size * random.uniform(-0.02, 0.04)
+                        # Calculate P&L from actual execution prices
+                        pnl = 0.0
+                        if exit_result and exit_result.success and pos.get("entry_price", 0) > 0:
+                            if pos["side"] in ("BUY", "LONG"):
+                                pnl = (exit_result.filled_price - pos["entry_price"]) / pos["entry_price"] * size
+                            else:
+                                pnl = (pos["entry_price"] - exit_result.filled_price) / pos["entry_price"] * size
                         won = pnl > 0
                         if won:
                             self._win_count += 1
