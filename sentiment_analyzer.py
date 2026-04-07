@@ -46,28 +46,53 @@ class SentimentResult:
 
 
 # Pre-built prompt for maximum speed — no wasted tokens
-ANALYSIS_PROMPT = """Analyze this Trump social media post for trading impact. Respond ONLY with a JSON object, no other text.
+ANALYSIS_PROMPT = """You are a trading analyst monitoring Trump's social media for EVERY market-moving signal. Analyze this post and respond ONLY with a JSON object.
 
 Post: "{text}"
 
 Respond with exactly this JSON format:
-{{"relevant": true/false, "direction": "bullish"/"bearish"/"neutral", "confidence": 0.0-1.0, "move_pct": 0.0-0.10, "reasoning": "one sentence", "topics": ["crypto","tariffs","fed","trade_war","economy","regulation"], "kalshi_keywords": ["keyword1", "keyword2"], "kalshi_side": "YES"/"NO"/"", "kalshi_confidence": 0.0-1.0}}
+{{"relevant": true/false, "direction": "bullish"/"bearish"/"neutral", "confidence": 0.0-1.0, "move_pct": 0.0-0.10, "reasoning": "one sentence", "topics": ["list", "of", "topics"], "kalshi_keywords": ["keyword1", "keyword2"], "kalshi_side": "YES"/"NO"/"", "kalshi_confidence": 0.0-1.0}}
 
-Rules:
-- "relevant" = true if post affects BTC/crypto, tariffs, trade policy, Fed/rates, or USD
-- Personal attacks, rally talk, media complaints = NOT relevant
-- "direction" = BTC price direction (bullish/bearish/neutral)
-- "move_pct" = expected BTC move in 30 minutes (0.01 = 1%)
-- "kalshi_keywords" = search terms to find related Kalshi prediction contracts
-  Examples: if post mentions tariffs on China → ["tariff", "china", "trade"]
-  If post mentions firing someone → ["fire", person's name]
-  If post mentions executive order → ["executive order", topic]
-  If post mentions rate cuts → ["fed", "rate", "interest"]
-- "kalshi_side" = which side to buy on the matching Kalshi contract
-  If Trump ANNOUNCES he will do X → buy YES on "Will Trump do X?"
-  If Trump says he WON'T do X → buy NO
-- "kalshi_confidence" = how certain the post makes the contract outcome (0.8+ for announcements)
-- Be conservative — only >0.7 confidence for unmistakable signals"""
+WHAT IS RELEVANT (mark relevant=true):
+- ANY foreign policy: Iran, Russia, China, NATO, Israel, Ukraine, North Korea, ceasefire, war, peace deal, sanctions, military action, troop deployment
+- ANY economic policy: tariffs, trade deals, spending bills, debt ceiling, government shutdown, executive orders, regulation
+- ANY financial topic: Fed, rates, inflation, Bitcoin, crypto, stocks, oil, dollar, treasury
+- ANY personnel changes: firing cabinet members, Fed chair, ambassadors, military leaders
+- ANY legislation: bills signed, vetoed, proposed
+- Threats, ultimatums, or deadlines against any country
+- Market-moving announcements of ANY kind
+
+WHAT IS NOT RELEVANT (mark relevant=false):
+- Personal attacks on media/opponents with no policy content
+- Rally schedules, crowd sizes, ratings
+- Birthday wishes, holidays, sports commentary
+- Pure campaign rhetoric with no actionable policy
+
+DIRECTION RULES:
+- Peace/ceasefire/de-escalation → BULLISH (risk-on)
+- War/military strike/escalation → BEARISH (risk-off)
+- Tariffs/trade war → BEARISH
+- Rate cuts/pro-crypto/deregulation → BULLISH
+- Sanctions/embargo → depends on target, usually BEARISH
+- Firing Fed chair / institutional disruption → BEARISH
+
+KALSHI KEYWORDS — extract terms to find prediction market contracts:
+- "ceasefire with Iran" → ["iran", "ceasefire", "peace", "deal"]
+- "tariffs on China 60%" → ["tariff", "china", "trade"]
+- "firing the Fed chair" → ["fed", "chair", "fire", "replace"]
+- "executive order on crypto" → ["executive order", "crypto", "bitcoin"]
+- "NATO Article 5" → ["nato", "article 5", "military"]
+- "Ukraine peace deal" → ["ukraine", "peace", "ceasefire", "russia"]
+- "government shutdown" → ["shutdown", "government", "spending"]
+- ANY policy topic → extract the key nouns and action
+
+KALSHI SIDE:
+- Trump ANNOUNCES he will do X → buy YES on "Will Trump do X?"
+- Trump says he WON'T do X → buy NO
+- Trump threatens X → buy YES (he usually follows through)
+- Peace deal / ceasefire → YES on peace contracts, NO on war contracts
+
+Be aggressive on clear signals (conf 0.8+), conservative on vague posts (conf 0.3-0.5)."""
 
 
 class SentimentAnalyzer:
@@ -186,16 +211,25 @@ class SentimentAnalyzer:
             relevant = True
             reasoning = f"Direct crypto mention ({crypto_hits} keywords)"
 
-        # Tariff keywords — bearish for risk assets
-        tariff_keywords = ["tariff", "tariffs", "trade war", "import tax", "duties",
-                          "trade deal", "trade deficit"]
-        tariff_hits = sum(1 for kw in tariff_keywords if kw in text)
+        # Tariff keywords — bearish for risk assets (unless it's a deal)
+        tariff_bearish = ["tariff", "tariffs", "trade war", "import tax", "duties", "trade deficit"]
+        tariff_bullish = ["trade deal", "trade agreement", "trade pact", "deal with china"]
+        tariff_bear_hits = sum(1 for kw in tariff_bearish if kw in text)
+        tariff_bull_hits = sum(1 for kw in tariff_bullish if kw in text)
+        tariff_hits = tariff_bear_hits + tariff_bull_hits
         if tariff_hits > 0:
             topics.append("tariffs")
-            if not relevant or tariff_hits > crypto_hits:
+            if tariff_bull_hits > 0:
+                # Trade DEAL = bullish
+                direction = "BULLISH"
+                confidence = min(0.5 + tariff_bull_hits * 0.15, 0.85)
+                move = min(0.02 + tariff_bull_hits * 0.01, 0.05)
+                relevant = True
+                reasoning = f"Trade deal/agreement ({tariff_bull_hits} signals)"
+            elif not relevant or tariff_bear_hits > crypto_hits:
                 direction = "BEARISH"
-                confidence = min(0.4 + tariff_hits * 0.15, 0.80)
-                move = min(0.015 + tariff_hits * 0.01, 0.05)
+                confidence = min(0.4 + tariff_bear_hits * 0.15, 0.80)
+                move = min(0.015 + tariff_bear_hits * 0.01, 0.05)
                 relevant = True
                 reasoning = f"Tariff/trade war mention ({tariff_hits} keywords)"
 
@@ -230,6 +264,84 @@ class SentimentAnalyzer:
                 move = 0.008
             relevant = True
             reasoning = f"Economy mention ({econ_hits} keywords)"
+
+        # Geopolitical / War / Peace — these are HUGE market movers
+        geo_bullish = ["ceasefire", "peace deal", "peace agreement", "peace talks",
+                       "de-escalation", "troop withdrawal", "diplomatic solution",
+                       "treaty signed", "hostages released", "war is over", "end the war"]
+        geo_bearish = ["military strike", "missile launch", "troops deployed", "invasion",
+                       "war declaration", "nuclear", "bomb", "attack on", "retaliatory strike",
+                       "article 5", "martial law", "state of emergency", "blockade"]
+        geo_countries = ["iran", "russia", "china", "north korea", "ukraine", "israel",
+                        "gaza", "taiwan", "syria", "iraq", "nato", "eu", "european union",
+                        "saudi", "venezuela", "cuba", "mexico border"]
+
+        geo_bull_hits = sum(1 for kw in geo_bullish if kw in text)
+        geo_bear_hits = sum(1 for kw in geo_bearish if kw in text)
+        geo_country_hits = [c for c in geo_countries if c in text]
+
+        # Only trigger on countries if there's also an action keyword, or if
+        # bullish/bearish keywords are present. Bare country mention = skip.
+        has_geo_action = geo_bull_hits > 0 or geo_bear_hits > 0
+        if has_geo_action or (len(geo_country_hits) > 0 and not relevant):
+            topics.append("geopolitical")
+            if geo_bull_hits > geo_bear_hits:
+                direction = "BULLISH"
+                confidence = min(0.55 + geo_bull_hits * 0.15, 0.90)
+                move = min(0.02 + geo_bull_hits * 0.015, 0.06)
+                reasoning = f"Peace/de-escalation ({geo_bull_hits} signals, countries: {geo_country_hits})"
+            elif geo_bear_hits > 0:
+                direction = "BEARISH"
+                confidence = min(0.60 + geo_bear_hits * 0.15, 0.92)
+                move = min(0.025 + geo_bear_hits * 0.02, 0.08)
+                reasoning = f"Military/escalation ({geo_bear_hits} signals, countries: {geo_country_hits})"
+            else:
+                # Country mentioned but no clear direction — still relevant
+                direction = "BEARISH"  # default: geopolitical uncertainty = risk-off
+                confidence = 0.40
+                move = 0.01
+                reasoning = f"Geopolitical mention ({geo_country_hits})"
+            relevant = True
+            # Generate Kalshi keywords from the countries/topics mentioned
+            kalshi_kw = geo_country_hits + [kw for kw in geo_bullish + geo_bearish if kw in text]
+            kalshi_side = "YES" if geo_bull_hits > geo_bear_hits else "NO"
+            kalshi_conf = confidence * 0.85
+
+        # Sanctions / Trade restrictions
+        sanctions_kw = ["sanction", "embargo", "ban imports", "ban exports", "blacklist",
+                       "asset freeze", "travel ban", "trade restriction", "export control"]
+        sanction_hits = sum(1 for kw in sanctions_kw if kw in text)
+        if sanction_hits > 0:
+            if "geopolitical" not in topics:
+                topics.append("sanctions")
+            direction = "BEARISH"
+            confidence = min(0.50 + sanction_hits * 0.15, 0.85)
+            move = min(0.015 + sanction_hits * 0.01, 0.04)
+            relevant = True
+            reasoning = f"Sanctions/restrictions ({sanction_hits} signals)"
+            kalshi_kw = [kw for kw in sanctions_kw if kw in text] + geo_country_hits
+            kalshi_side = "YES"
+            kalshi_conf = confidence * 0.8
+
+        # Government / Policy actions
+        gov_kw = ["government shutdown", "debt ceiling", "spending bill", "budget",
+                  "impeach", "resign", "25th amendment", "veto", "signed into law",
+                  "supreme court", "congress vote", "senate vote", "house vote"]
+        gov_hits = sum(1 for kw in gov_kw if kw in text)
+        if gov_hits > 0 and "geopolitical" not in topics:
+            topics.append("government")
+            relevant = True
+            confidence = min(0.45 + gov_hits * 0.12, 0.80)
+            move = min(0.01 + gov_hits * 0.008, 0.03)
+            if any(w in text for w in ["shutdown", "impeach", "resign", "25th"]):
+                direction = "BEARISH"
+                reasoning = f"Political crisis ({gov_hits} signals)"
+            else:
+                direction = "BULLISH"
+                reasoning = f"Government action ({gov_hits} signals)"
+            kalshi_kw = [kw for kw in gov_kw if kw in text]
+            kalshi_side = "YES"
+            kalshi_conf = confidence * 0.75
 
         # Amplifiers
         if any(w in text for w in ["immediately", "effective immediately", "right now", "today"]):

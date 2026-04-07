@@ -222,23 +222,37 @@ class NewsFeed:
 
         # CRITICAL — these move markets instantly
         critical_kw = [
+            # Monetary policy
             "federal reserve", "rate decision", "rate cut", "cuts rate", "rate hike",
             "fomc", "interest rate", "fed cut", "fed hike",
+            # Economic data
             " cpi ", "cpi report", "cpi comes", "cpi data",
             "inflation data", "inflation rate",
             "jobs report", "nonfarm payroll", "nonfarm payrolls",
-            "tariff", "trade war", "sanctions",
-            "executive order", "emergency declaration",
-            "war ", "invasion", "military strike",
-            "bitcoin reserve", "crypto regulation",
             "gdp growth", "gdp report", "recession",
             "debt ceiling", "government shutdown",
-            "trump", "truth social",
-            "strategic bitcoin", "crypto executive",
-            "digital asset", "nuclear",
-            "nato", "iran strike",
+            # Trade/tariffs
+            "tariff", "trade war", "trade deal",
+            # Crypto
+            "bitcoin", "ethereum", "bitcoin reserve", "crypto regulation",
+            "strategic bitcoin", "crypto executive", "digital asset",
+            # Trump
+            "trump", "truth social", "executive order", "emergency declaration",
+            # Geopolitical — EVERYTHING that moves markets
+            "war ", "invasion", "military strike", "nuclear",
+            "ceasefire", "peace deal", "peace agreement", "peace talks",
+            "nato", "article 5",
+            "iran", "iran strike", "iran deal", "iran nuclear",
+            "russia", "ukraine", "kyiv", "moscow",
+            "china", "taiwan", "beijing",
+            "north korea", "pyongyang", "missile launch",
+            "israel", "gaza", "hezbollah", "hamas",
+            "sanctions", "embargo", "blockade",
+            "troops deploy", "military action", "air strike",
+            "hostage", "prisoner exchange",
+            "coup", "assassination", "regime change",
+            # Breaking
             "just in:", "breaking:",
-            "bitcoin", "ethereum",
         ]
         if any(kw in text for kw in critical_kw):
             item.category = self._categorize(text)
