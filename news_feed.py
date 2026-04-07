@@ -224,17 +224,20 @@ class NewsFeed:
         critical_kw = [
             "federal reserve", "rate decision", "rate cut", "rate hike",
             "fomc", "interest rate",
-            "cpi report", "inflation data", "jobs report", "nonfarm payroll",
+            " cpi ", "cpi report", "cpi comes", "cpi data",
+            "inflation data", "inflation rate",
+            "jobs report", "nonfarm payroll", "nonfarm payrolls",
             "tariff", "trade war", "sanctions",
             "executive order", "emergency declaration",
             "war ", "invasion", "military strike",
             "bitcoin reserve", "crypto regulation",
-            "gdp growth", "recession",
+            "gdp growth", "gdp report", "recession",
             "debt ceiling", "government shutdown",
             "trump", "truth social",
             "strategic bitcoin", "crypto executive",
             "digital asset", "nuclear",
             "nato", "iran strike",
+            "just in:", "breaking:",
         ]
         if any(kw in text for kw in critical_kw):
             item.category = self._categorize(text)
@@ -264,12 +267,12 @@ class NewsFeed:
         return "normal"
 
     def _categorize(self, text: str) -> str:
-        if any(kw in text for kw in ["fed", "fomc", "rate", "interest", "monetary"]):
-            return "fed"
         if any(kw in text for kw in ["tariff", "trade war", "sanction", "import"]):
             return "tariffs"
-        if any(kw in text for kw in ["cpi", "inflation", "jobs", "payroll", "gdp", "employment"]):
+        if any(kw in text for kw in ["cpi", "inflation", "jobs", "payroll", "gdp", "employment", "nonfarm", "unemployment"]):
             return "economic_data"
+        if any(kw in text for kw in ["fed", "fomc", "rate", "interest", "monetary"]):
+            return "fed"
         if any(kw in text for kw in ["bitcoin", "crypto", "ethereum", "btc"]):
             return "crypto"
         if any(kw in text for kw in ["earning", "revenue", "profit", "guidance"]):

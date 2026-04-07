@@ -144,7 +144,7 @@ class SentimentAnalyzer:
             return SentimentResult(
                 post=post,
                 is_market_relevant=analysis.get("relevant", False),
-                direction=analysis.get("direction", "neutral"),
+                direction=analysis.get("direction", "neutral").upper(),
                 confidence=float(analysis.get("confidence", 0.0)),
                 expected_move_pct=float(analysis.get("move_pct", 0.0)),
                 reasoning=analysis.get("reasoning", ""),
@@ -168,7 +168,7 @@ class SentimentAnalyzer:
         """Fast keyword-based analysis when Claude API is unavailable."""
         text = post.text.lower()
         topics = []
-        direction = "neutral"
+        direction = "NEUTRAL"
         confidence = 0.0
         move = 0.0
         relevant = False
@@ -180,7 +180,7 @@ class SentimentAnalyzer:
         crypto_hits = sum(1 for kw in crypto_keywords if kw in text)
         if crypto_hits > 0:
             topics.append("crypto")
-            direction = "bullish"
+            direction = "BULLISH"
             confidence = min(0.5 + crypto_hits * 0.15, 0.90)
             move = min(0.02 + crypto_hits * 0.01, 0.06)
             relevant = True
@@ -193,7 +193,7 @@ class SentimentAnalyzer:
         if tariff_hits > 0:
             topics.append("tariffs")
             if not relevant or tariff_hits > crypto_hits:
-                direction = "bearish"
+                direction = "BEARISH"
                 confidence = min(0.4 + tariff_hits * 0.15, 0.80)
                 move = min(0.015 + tariff_hits * 0.01, 0.05)
                 relevant = True
@@ -206,7 +206,7 @@ class SentimentAnalyzer:
         if fed_hits > 0:
             topics.append("fed")
             if not relevant:
-                direction = "bullish"
+                direction = "BULLISH"
                 confidence = min(0.4 + fed_hits * 0.12, 0.75)
                 move = min(0.01 + fed_hits * 0.008, 0.03)
                 relevant = True
@@ -221,11 +221,11 @@ class SentimentAnalyzer:
             # Positive economy talk = mild bullish, negative = mild bearish
             negative_words = ["recession", "crash", "disaster", "terrible", "worst"]
             if any(w in text for w in negative_words):
-                direction = "bearish"
+                direction = "BEARISH"
                 confidence = 0.35
                 move = 0.01
             else:
-                direction = "bullish"
+                direction = "BULLISH"
                 confidence = 0.30
                 move = 0.008
             relevant = True

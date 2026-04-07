@@ -329,7 +329,7 @@ class OrderBookReader:
             return decision
 
         # Rule 3: Does order flow agree with news?
-        news_is_bullish = news_direction in ("bullish", "BUY", "LONG", "YES")
+        news_is_bullish = news_direction.upper() in ("BULLISH", "BUY", "LONG", "YES")
 
         if news_is_bullish and flow.direction == "aggressive_sell":
             decision.reason = "SKIP: News says buy but market is aggressively selling — flow disagrees"
