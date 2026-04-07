@@ -376,20 +376,20 @@ function render(data) {
   }).join('');
 
   // Positions table
-  $('positions-table').innerHTML = data.positions.map(p =>
+  $('positions-table').innerHTML = data.positions.length > 0 ? data.positions.map(p =>
     '<tr>' +
-    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + p.title.substring(0,45) + '</div></td>' +
+    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + (p.title || '').substring(0,45) + '</div></td>' +
     '<td><span class="side-badge side-' + p.side.toLowerCase() + '">' + p.side + '</span></td>' +
-    '<td><span class="type-badge type-' + p.type + '">' + p.type + '</span></td>' +
+    '<td><span class="type-badge type-' + (p.type || 'longshot') + '">' + (p.type || '-') + '</span></td>' +
     '<td>' + p.entry_price.toFixed(2) + '</td>' +
     '<td>' + p.current_price.toFixed(2) + '</td>' +
     '<td>$' + p.size_usd.toFixed(0) + '</td>' +
     '<td class="' + pnlClass(p.pnl) + '">' + fmt(p.pnl) + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No open positions — waiting for real signals</td></tr>';
 
   // Signals table
-  $('signals-table').innerHTML = data.signals.map(s =>
+  $('signals-table').innerHTML = data.signals.length > 0 ? data.signals.map(s =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + s.time + '</td>' +
     '<td style="max-width:180px">' + s.ticker + '</td>' +
@@ -400,10 +400,10 @@ function render(data) {
     '<td><span class="score-bar"><span class="score-fill" style="width:' + (s.score*100) + '%;background:' + scoreColor(s.score) + '"></span></span>' + s.score.toFixed(2) + '</td>' +
     '<td class="action-' + s.action.toLowerCase() + '">' + s.action + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No signals yet — waiting for bot to scan markets</td></tr>';
 
   // Closed trades table
-  $('closed-table').innerHTML = data.closed_trades.map(c =>
+  $('closed-table').innerHTML = data.closed_trades.length > 0 ? data.closed_trades.map(c =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + c.closed + '</td>' +
     '<td>' + c.ticker + '</td>' +
@@ -414,7 +414,7 @@ function render(data) {
     '<td class="' + pnlClass(c.pnl) + '">' + fmt(c.pnl) + '</td>' +
     '<td><span class="side-badge ' + (c.result === 'win' ? 'side-yes' : 'side-no') + '">' + c.result.toUpperCase() + '</span></td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No closed trades yet — trades appear here after positions are exited</td></tr>';
 
   // Risk meters
   const risks = [
