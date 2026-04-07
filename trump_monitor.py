@@ -3,8 +3,9 @@ Trump Truth Social monitor.
 
 Polls multiple sources for new Trump posts every 2-3 seconds:
   1. Truth Social RSS/web scrape (primary)
-  2. Twitter mirror accounts (backup — @TruthSocialBot etc.)
-  3. Nitter instances (backup)
+  2. Twitter/X API v2 timeline + search (if bearer token configured)
+  3. Twitter mirror accounts (backup — @TruthSocialBot etc.)
+  4. Nitter instances (backup)
 
 When a new post is detected, emits it for sentiment analysis.
 Speed target: detect a new post within 5 seconds of publication.
@@ -34,7 +35,7 @@ class TrumpPost:
     post_id: str
     text: str
     timestamp: float
-    source: str           # "truthsocial", "twitter_mirror", "rss"
+    source: str           # "truthsocial", "twitter", "twitter_mirror", "rss"
     detected_at: float = field(default_factory=time.time)
     url: str = ""
     has_media: bool = False
@@ -129,6 +130,17 @@ class TrumpMonitor:
                 asyncio.create_task(self._poll_nitter(), name="nitter"),
                 asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
             ]
+            # Add Twitter API pollers if bearer token is configured
+            if config.TWITTER_BEARER_TOKEN:
+                tasks.append(
+                    asyncio.create_task(self._poll_twitter_api(), name="twitter_api"),
+                )
+                tasks.append(
+                    asyncio.create_task(self._poll_twitter_search(), name="twitter_search"),
+                )
+                logger.info("Twitter/X API polling enabled")
+            else:
+                logger.info("Twitter/X API polling disabled (no TWITTER_BEARER_TOKEN)")
             await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
@@ -332,6 +344,143 @@ class TrumpMonitor:
             except Exception as exc:
                 logger.debug("Truth Atom poll error: %s", exc)
 
+            await asyncio.sleep(self._poll_interval * 2)
+
+    # --- Twitter/X API v2 Polling ---
+
+    def _twitter_auth_headers(self) -> dict[str, str]:
+        """Return Authorization header for Twitter API v2."""
+        return {"Authorization": f"Bearer {config.TWITTER_BEARER_TOKEN}"}
+
+    def _parse_twitter_tweet(self, tweet: dict) -> Optional[TrumpPost]:
+        """Parse a Twitter API v2 tweet object into a TrumpPost."""
+        try:
+            text = tweet.get("text", "").strip()
+            if not text:
+                return None
+
+            tweet_id = tweet.get("id", "")
+            created_at = tweet.get("created_at", "")
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                ts = dt.timestamp()
+            except (ValueError, TypeError):
+                ts = time.time()
+
+            return TrumpPost(
+                post_id=str(tweet_id),
+                text=text,
+                timestamp=ts,
+                source="twitter",
+                url=f"https://x.com/realDonaldTrump/status/{tweet_id}" if tweet_id else "",
+            )
+        except Exception as exc:
+            logger.error("Failed to parse Twitter tweet: %s", exc)
+            return None
+
+    async def _poll_twitter_api(self) -> None:
+        """Poll the Twitter/X API v2 user timeline for new tweets."""
+        user_id = config.TWITTER_TRUMP_USER_ID
+        url = f"https://api.twitter.com/2/users/{user_id}/tweets"
+        params = {
+            "max_results": "5",
+            "tweet.fields": "created_at,text",
+        }
+
+        while self._running:
+            try:
+                resp = await self._http.get(
+                    url,
+                    params=params,
+                    headers=self._twitter_auth_headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    tweets = data.get("data", [])
+                    for tweet in tweets:
+                        post = self._parse_twitter_tweet(tweet)
+                        if post and post.text_hash not in self._seen_hashes:
+                            self._seen_hashes.add(post.text_hash)
+                            await self._post_queue.put(post)
+                            logger.info(
+                                "NEW POST detected (Twitter API): %s... [latency=%dms]",
+                                post.text[:80],
+                                post.detection_latency_ms,
+                            )
+                elif resp.status_code == 429:
+                    # Rate limited — read Retry-After or back off 60s
+                    retry_after = int(resp.headers.get("Retry-After", "60"))
+                    logger.warning(
+                        "Twitter API rate limited (429), backing off %ds",
+                        retry_after,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue  # skip the normal sleep at the bottom
+                elif resp.status_code == 401:
+                    logger.error("Twitter API auth failed (401). Check TWITTER_BEARER_TOKEN.")
+                else:
+                    logger.debug("Twitter API returned %d", resp.status_code)
+
+            except Exception as exc:
+                logger.error("Twitter API poll error: %s", exc)
+
+            await asyncio.sleep(self._poll_interval)
+
+    async def _poll_twitter_search(self) -> None:
+        """Poll the Twitter/X API v2 recent-search endpoint as a backup.
+
+        Uses the search/recent endpoint with a from: query.  This catches
+        tweets even if the user-timeline endpoint fails (e.g. suspended
+        account, changed user ID, etc.).
+        """
+        url = "https://api.twitter.com/2/tweets/search/recent"
+        params = {
+            "query": "from:realDonaldTrump -is:retweet",
+            "max_results": "10",
+            "tweet.fields": "created_at,text",
+        }
+
+        while self._running:
+            try:
+                resp = await self._http.get(
+                    url,
+                    params=params,
+                    headers=self._twitter_auth_headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    tweets = data.get("data", [])
+                    for tweet in tweets:
+                        post = self._parse_twitter_tweet(tweet)
+                        if post:
+                            # Re-tag so we can distinguish search hits in logs
+                            post.source = "twitter_search"
+                            if post.text_hash not in self._seen_hashes:
+                                self._seen_hashes.add(post.text_hash)
+                                await self._post_queue.put(post)
+                                logger.info(
+                                    "NEW POST detected (Twitter Search): %s... [latency=%dms]",
+                                    post.text[:80],
+                                    post.detection_latency_ms,
+                                )
+                elif resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", "60"))
+                    logger.warning(
+                        "Twitter Search rate limited (429), backing off %ds",
+                        retry_after,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+                elif resp.status_code == 401:
+                    logger.error("Twitter Search auth failed (401). Check TWITTER_BEARER_TOKEN.")
+                else:
+                    logger.debug("Twitter Search returned %d", resp.status_code)
+
+            except Exception as exc:
+                logger.error("Twitter Search poll error: %s", exc)
+
+            # Search endpoint has stricter rate limits; poll a bit slower
             await asyncio.sleep(self._poll_interval * 2)
 
     # --- Paper Mode ---

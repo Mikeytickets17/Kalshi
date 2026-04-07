@@ -41,6 +41,10 @@ TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", 
 TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "20"))
 TRUMP_SCALE_BY_CONFIDENCE: bool = os.getenv("TRUMP_SCALE_BY_CONFIDENCE", "true").lower() == "true"
 
+# --- Twitter/X API ---
+TWITTER_BEARER_TOKEN: str = os.getenv("TWITTER_BEARER_TOKEN", "")
+TWITTER_TRUMP_USER_ID: str = os.getenv("TWITTER_TRUMP_USER_ID", "25073877")  # @realDonaldTrump
+
 # --- Claude API (for sentiment analysis) ---
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 

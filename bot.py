@@ -113,6 +113,12 @@ class LatencyArbBot:
         logger.info("Max positions: %d", config.MAX_CONCURRENT_POSITIONS)
         logger.info("=" * 64)
 
+        # Send startup notification
+        self._notifier.notify_startup(
+            self._portfolio_value,
+            "PAPER" if self._paper_mode else "LIVE",
+        )
+
         tasks = [
             # Strategy 1: Latency Arbitrage
             asyncio.create_task(self._price_feed.start(), name="price_feed"),
@@ -419,6 +425,15 @@ class LatencyArbBot:
                 # Analyze sentiment with Claude (or rule-based fallback)
                 sentiment = await self._sentiment.analyze(post)
 
+                # Alert: Trump post detected with sentiment
+                self._notifier.notify_trump_post_detected(
+                    post_text=post.text,
+                    source=post.source,
+                    sentiment=sentiment.direction,
+                    confidence=sentiment.confidence,
+                    latency_ms=post.detection_latency_ms,
+                )
+
                 if not sentiment.is_market_relevant:
                     logger.info("Post not market-relevant, skipping")
                     continue
@@ -506,6 +521,12 @@ class LatencyArbBot:
                         text=post.text, source=post.source,
                         sentiment=sentiment.direction,
                         confidence=sentiment.confidence,
+                    )
+
+                    self._notifier.notify_trump_trade(
+                        side=result.side, asset="BTC", venue="Binance",
+                        size_usd=result.filled_usd, entry_price=result.filled_price,
+                        confidence=sentiment.confidence, post_text=post.text,
                     )
 
                     logger.info(
