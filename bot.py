@@ -26,6 +26,7 @@ from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
 from news_feed import NewsFeed, NewsItem
 from notifier import TelegramNotifier
+from orderbook import OrderBookReader
 from polymarket import Position, Side, OrderResult
 from position_sizer import PositionSizer
 from price_feed import PriceFeed
@@ -80,6 +81,9 @@ class LatencyArbBot:
         self._contract_matcher = ContractMatcher(self._kalshi)
         self._trump_positions: list[dict] = []
 
+        # Components — Order Book + Flow Analysis
+        self._orderbook = OrderBookReader()
+
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
         self._news_analyzer = NewsAnalyzer()
@@ -115,6 +119,8 @@ class LatencyArbBot:
             asyncio.create_task(self._trump_monitor.start(), name="trump_monitor"),
             asyncio.create_task(self._trump_news_processor(), name="trump_processor"),
             asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
+            # Order Book + Flow Analysis
+            asyncio.create_task(self._orderbook.start(), name="orderbook"),
             # Strategy 3: Universal News → Stocks + BTC + Kalshi
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
@@ -169,6 +175,7 @@ class LatencyArbBot:
 
         await self._scanner.stop()
         await self._price_feed.stop()
+        await self._orderbook.stop()
         await self._trump_monitor.stop()
         await self._news_feed.stop()
         await self._sentiment.close()
@@ -373,9 +380,32 @@ class LatencyArbBot:
                     )
                     continue
 
-                # Calculate trade size
+                # WAIT for market reaction before committing
+                logger.info("Trump post detected — waiting 2s for order flow confirmation...")
+                await asyncio.sleep(2)
+
+                # CHECK ORDER BOOK: is the market actually reacting?
+                btc_decision = self._orderbook.make_decision(
+                    "BTC", sentiment.direction, sentiment.confidence
+                )
+
+                if not btc_decision.should_trade:
+                    logger.info(
+                        "ORDER BOOK REJECTED Trump trade: %s",
+                        btc_decision.reason,
+                    )
+                    # Still try Kalshi contracts even if BTC flow doesn't confirm
+                    # (contracts react differently than spot)
+                else:
+                    logger.info(
+                        "ORDER BOOK CONFIRMED: %s BTC — %s",
+                        btc_decision.side, btc_decision.reason,
+                    )
+
+                # Calculate trade size — use book-confirmed direction
+                trade_side = btc_decision.side if btc_decision.should_trade else None
                 size = min(
-                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * sentiment.confidence,
+                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * btc_decision.confidence,
                     config.TRUMP_MAX_TRADE_SIZE_USDC,
                 )
                 size = max(size, config.MIN_TRADE_SIZE_USDC)
@@ -384,10 +414,10 @@ class LatencyArbBot:
                     logger.warning("Insufficient balance for Trump trade ($%.2f)", size)
                     continue
 
-                # Execute on Binance
-                if sentiment.direction == "bullish":
+                # Execute on Binance ONLY if order book confirms
+                if trade_side == "BUY":
                     result = self._exchange.buy("BTC", size)
-                elif sentiment.direction == "bearish":
+                elif trade_side == "SELL":
                     result = self._exchange.sell("BTC", size)
                 else:
                     continue
@@ -526,10 +556,33 @@ class LatencyArbBot:
                     logger.debug("No tradeable actions from this headline")
                     continue
 
-                # Execute each action on its venue
+                # WAIT 2 seconds for market to react before trading
+                logger.info("News detected — waiting 2s for market reaction...")
+                await asyncio.sleep(2)
+
+                # Execute each action — but ONLY if order book confirms
                 for action in actions:
                     if action.confidence < 0.50:
                         continue
+
+                    # CHECK ORDER BOOK + FLOW before every trade
+                    if action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
+                        decision = self._orderbook.make_decision(
+                            action.asset, action.side, action.confidence
+                        )
+                        if not decision.should_trade:
+                            logger.info(
+                                "ORDER BOOK REJECTED: %s %s — %s",
+                                action.side, action.asset, decision.reason,
+                            )
+                            continue
+
+                        # Use book-adjusted confidence and size
+                        action.confidence = decision.confidence
+                        logger.info(
+                            "ORDER BOOK CONFIRMED: %s %s — %s (conf=%.2f)",
+                            decision.side, action.asset, decision.reason, decision.confidence,
+                        )
 
                     size = min(
                         self._portfolio_value * action.size_pct * action.confidence,
