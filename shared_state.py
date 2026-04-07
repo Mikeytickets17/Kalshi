@@ -227,6 +227,16 @@ def record_news(headline: str, source: str, priority: str, category: str = "") -
         if len(_state["news_items"]) > 30:
             _state["news_items"] = _state["news_items"][:30]
         _state["last_updated"] = time.time()
+    _persist()
+
+
+def update_position_pnl(trade_id: str, unrealized_pnl: float) -> None:
+    """Update unrealized P&L for an active position."""
+    with _lock:
+        for pos in _state["active_positions"]:
+            if pos["id"] == trade_id:
+                pos["unrealized_pnl"] = round(unrealized_pnl, 2)
+                break
 
 
 def update_portfolio(value: float) -> None:

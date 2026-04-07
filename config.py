@@ -51,8 +51,8 @@ CONFIRMATION_WINDOW_MS: int = int(os.getenv("CONFIRMATION_WINDOW_MS", "500"))
 MIN_CONTRACT_DURATION_SECONDS: int = int(os.getenv("MIN_CONTRACT_DURATION_SECONDS", "60"))
 
 # --- Target Markets ---
-TARGET_ASSETS: list[str] = os.getenv("TARGET_ASSETS", "BTC,ETH").split(",")
-TARGET_DURATIONS: list[int] = [int(x) for x in os.getenv("TARGET_DURATIONS", "15,60").split(",")]
+TARGET_ASSETS: list[str] = [x.strip() for x in os.getenv("TARGET_ASSETS", "BTC,ETH").split(",")]
+TARGET_DURATIONS: list[int] = [int(x.strip()) for x in os.getenv("TARGET_DURATIONS", "15,60").split(",")]
 
 # --- Position Sizing ---
 BASE_COPY_PCT: float = float(os.getenv("BASE_COPY_PCT", "0.05"))

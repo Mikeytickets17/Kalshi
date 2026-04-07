@@ -107,7 +107,8 @@ class KalshiClient:
 
     def _parse_market(self, m: dict) -> Optional[KalshiMarket]:
         try:
-            yes_price = m.get("yes_ask", 0) or m.get("last_price", 50)
+            yes_ask = m.get("yes_ask")
+            yes_price = yes_ask if yes_ask is not None else (m.get("last_price") or 50)
             if isinstance(yes_price, (int, float)) and yes_price > 1:
                 yes_price = yes_price / 100.0
 
@@ -178,7 +179,9 @@ class KalshiClient:
 
         try:
             price_cents = max(1, min(99, int(round(price * 100))))
-            count = max(1, int(size_usd / price))
+            # Each contract costs price_cents. size_usd is in dollars.
+            # cost_per_contract = price_cents / 100
+            count = max(1, int(size_usd / (price_cents / 100)))
 
             params: dict[str, Any] = {
                 "ticker": ticker,

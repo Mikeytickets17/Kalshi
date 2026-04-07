@@ -331,9 +331,10 @@ class LatencyArbBot:
         if self._paper_mode:
             age = time.time() - position.entry_time
             if age > random.uniform(300, 900):
-                # Simulate win/loss based on the edge at entry
-                # High-edge entries win ~90-95% of the time
-                win_prob = min(0.70 + position.avg_price * 0.25, 0.96)
+                # Simulate win/loss: lower entry price = more edge = higher win rate
+                # Buying YES at 0.40 has more upside than at 0.90
+                edge_factor = 1.0 - position.avg_price  # higher when entry is lower
+                win_prob = min(0.60 + edge_factor * 0.35, 0.95)
                 if random.random() < win_prob:
                     # Won: contract resolves at $1.00
                     if position.side == Side.YES:
@@ -584,11 +585,20 @@ class LatencyArbBot:
                             result = self._exchange.buy(tp["asset"], tp["size_usd"])
 
                         if result.success:
-                            # Calculate PnL
-                            if tp["side"] == "BUY":
-                                pnl = (result.filled_price - tp["entry_price"]) * tp["qty"]
+                            # Calculate PnL — use qty for spot, size_usd for contracts
+                            if tp.get("type") == "kalshi_contract" or tp["qty"] == 0:
+                                # Kalshi contract: P&L = (exit - entry) * contracts
+                                # size_usd was the cost, exit is the contract resolution
+                                if tp["side"] in ("YES", "BUY"):
+                                    pnl = tp["size_usd"] * (result.filled_price / max(tp["entry_price"], 0.01) - 1)
+                                else:
+                                    pnl = tp["size_usd"] * (1 - result.filled_price / max(tp["entry_price"], 0.01))
                             else:
-                                pnl = (tp["entry_price"] - result.filled_price) * tp["qty"]
+                                # Spot BTC/ETH: P&L = price_change * quantity
+                                if tp["side"] == "BUY":
+                                    pnl = (result.filled_price - tp["entry_price"]) * tp["qty"]
+                                else:
+                                    pnl = (tp["entry_price"] - result.filled_price) * tp["qty"]
 
                             won = pnl > 0
                             if won:
@@ -614,6 +624,14 @@ class LatencyArbBot:
                                 tp["entry_price"], result.filled_price,
                                 config.TRUMP_HOLD_MINUTES,
                             )
+
+                        else:
+                            # Exit failed — increment retry counter, remove after 3 retries
+                            tp["_exit_retries"] = tp.get("_exit_retries", 0) + 1
+                            if tp["_exit_retries"] >= 3:
+                                logger.warning("TRUMP EXIT FAILED after 3 retries, dropping position: %s", tp.get("asset"))
+                                self._trump_positions.remove(tp)
+                            continue
 
                         self._trump_positions.remove(tp)
 
