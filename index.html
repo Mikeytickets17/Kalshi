@@ -59,10 +59,13 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <body>
 <div class="hdr">
 <div style="display:flex;align-items:center;gap:8px"><h1>MULTI-STRATEGY TRADING BOT</h1><span style="font-size:10px;color:var(--muted)">Kalshi + Binance + Alpaca</span></div>
+<div style="display:flex;align-items:center;gap:16px">
+<div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div><div id="pnl-value" style="font-size:20px;font-weight:700">$0.00</div></div>
 <div class="badges">
 <span class="badge b1">LIVE DATA</span>
 <span class="badge b2">4 STRATEGIES</span>
 <span style="font-size:9px;color:var(--muted)"><span class="pulse"></span><span id="clock">--:--:--</span></span>
+</div>
 </div>
 </div>
 <div class="wrap">
@@ -72,7 +75,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>BTC Price Chart (Live)</span><span style="color:var(--muted);font-size:9px" id="chart-range"></span></div><div class="card-b"><div class="chart" id="chart"></div></div></div>
 </div>
 <div class="row r2">
-<div class="card"><div class="card-h"><span>Live Trade Signals — What the Bot Would Trade RIGHT NOW</span><span class="live-dot"><span class="pulse"></span>Active</span></div><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Reason</th><th>Confidence</th></tr></thead><tbody id="signals"></tbody></table></div></div>
+<div class="card"><div class="card-h"><span>Live Trade Signals — What the Bot Would Trade RIGHT NOW</span><span class="live-dot"><span class="pulse"></span>Active</span></div><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Reason</th><th>Conf</th><th>P&L</th></tr></thead><tbody id="signals"></tbody></table></div></div>
 <div class="card"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
 </div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Truth Social Monitor</span><span class="live-dot"><span class="pulse"></span>Polling every 3s</span></div><div class="card-b" id="trump"></div></div>
@@ -94,6 +97,7 @@ let signals=[];
 let newsItems=[];
 let tradeCount=0,winCount=0,totalPnl=0;
 let priceSource='loading';
+var portfolio=10000;
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -238,18 +242,24 @@ function checkArbSignal(asset,price){
   if(edge>0.002){ // >0.2% divergence in real-time
     const side=price>contractPrice?'YES':'NO';
     const conf=Math.min(edge*20,0.95);
+    const size=Math.min(300,portfolio*0.03);
+    const won=Math.random()<0.9;
+    const pnl=won?(edge*size):(edge*size*-3);
+    totalPnl+=pnl;
+    tradeCount++;if(won)winCount++;
     signals.unshift({
       time:new Date().toLocaleTimeString(),
       strat:'ARB',side:side,
       asset:asset+'-UP-'+Math.round(contractPrice),
       venue:'Kalshi',
       reason:'CEX $'+price.toFixed(0)+' vs contract $'+contractPrice.toFixed(0)+' ('+((edge)*100).toFixed(2)+'% edge)',
-      conf:conf
+      conf:conf,
+      pnl:pnl,
+      size:size,
+      entryPrice:price
     });
     if(signals.length>20)signals.pop();
     lastArbSignal=Date.now();
-    tradeCount++;if(Math.random()<0.9)winCount++;
-    totalPnl+=edge*300*(Math.random()<0.9?1:-3);
   }
 }
 
@@ -270,9 +280,13 @@ function generateNewsSignal(headline,pri){
   }
   actions.forEach(a=>{
     a.time=new Date().toLocaleTimeString();
+    const size=Math.min(250,portfolio*0.04);
+    const won=Math.random()<0.72;
+    const pnl=won?(size*Math.random()*0.04):(-size*Math.random()*0.02);
+    a.pnl=pnl;a.size=size;
     signals.unshift(a);
-    tradeCount++;if(Math.random()<0.72)winCount++;
-    totalPnl+=(Math.random()-0.3)*20;
+    tradeCount++;if(won)winCount++;
+    totalPnl+=pnl;
   });
   if(signals.length>20)signals=signals.slice(0,20);
 }
@@ -292,15 +306,25 @@ function rotateTrump(){
   // Generate trades from this post
   if(currentTrump.conf>=0.5){
     const side=currentTrump.dir==='BULLISH'?'BUY':'SELL';
-    signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf});
+    const btcSize=Math.min(500,portfolio*0.05);
+    const btcWon=Math.random()<0.85;
+    const btcPnl=btcWon?(btcSize*currentTrump.move/100):(-btcSize*0.015);
+    totalPnl+=btcPnl;tradeCount++;if(btcWon)winCount++;
+    signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf,pnl:btcPnl,size:btcSize});
     if(currentTrump.topics.includes('crypto')){
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85});
+      const kSize=Math.min(300,portfolio*0.03);
+      const kWon=Math.random()<0.80;
+      const kPnl=kWon?(kSize*0.40):(-kSize*0.25); // contract jumps 40% or drops 25%
+      totalPnl+=kPnl;tradeCount++;if(kWon)winCount++;
+      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85,pnl:kPnl,size:kSize});
     }
     if(currentTrump.topics.includes('tariffs')){
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9});
+      const tSize=Math.min(300,portfolio*0.03);
+      const tWon=Math.random()<0.85;
+      const tPnl=tWon?(tSize*0.50):(-tSize*0.20); // tariff contract jumps 50% on announcement
+      totalPnl+=tPnl;tradeCount++;if(tWon)winCount++;
+      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9,pnl:tPnl,size:tSize});
     }
-    tradeCount+=2;winCount+=Math.random()<0.85?2:1;
-    totalPnl+=currentTrump.move*100*(currentTrump.dir==='BULLISH'?1:-1)*(Math.random()*0.5+0.5);
   }
   if(signals.length>20)signals=signals.slice(0,20);
 }
@@ -318,6 +342,7 @@ function render(){
   $('clock').textContent=now.toLocaleTimeString();
 
   const portfolio=10000+totalPnl;
+  window.portfolio=portfolio; // make accessible to signal generators
   const wr=tradeCount>0?(winCount/tradeCount*100):0;
 
   // Stats
@@ -351,13 +376,22 @@ function render(){
     $('chart-range').textContent='$'+mn.toFixed(0)+' — $'+mx.toFixed(0);
   }
 
-  // Signals
+  // P&L banner (sticky header)
+  const pnlEl=$('pnl-value');
+  pnlEl.textContent=(totalPnl>=0?'+':'')+totalPnl.toFixed(2);
+  pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+
+  // Signals with per-trade P&L
   $('signals').innerHTML=signals.slice(0,12).map(s=>{
     const sc='t-'+s.strat.toLowerCase();
     const sd=['YES','BUY','LONG'].includes(s.side)?'t-buy':'t-sell';
     const cb=Math.round(s.conf*100);
-    return '<tr><td style="color:var(--muted)">'+s.time+'</td><td><span class="tag '+sc+'">'+s.strat+'</span></td><td><span class="tag '+sd+'">'+s.side+'</span></td><td>'+s.asset+'</td><td style="color:var(--muted)">'+s.venue+'</td><td style="max-width:200px">'+s.reason+'</td><td>'+cb+'%</td></tr>';
-  }).join('')||'<tr><td colspan="7" style="color:var(--muted);text-align:center">Waiting for market data to generate signals...</td></tr>';
+    const pnl=s.pnl||0;
+    const pnlStr=pnl>=0?'+$'+pnl.toFixed(2):'-$'+Math.abs(pnl).toFixed(2);
+    const pnlCol=pnl>=0?'var(--green)':'var(--red)';
+    const sizeStr=s.size?'$'+s.size.toFixed(0):'';
+    return '<tr><td style="color:var(--muted)">'+s.time+'</td><td><span class="tag '+sc+'">'+s.strat+'</span></td><td><span class="tag '+sd+'">'+s.side+'</span></td><td>'+s.asset+'</td><td style="color:var(--muted)">'+s.venue+'</td><td style="max-width:180px">'+s.reason+'</td><td>'+cb+'%</td><td style="color:'+pnlCol+';font-weight:700">'+pnlStr+'<div style="font-size:7px;color:var(--muted);font-weight:400">on '+sizeStr+'</div></td></tr>';
+  }).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">Waiting for market data to generate signals...</td></tr>';
 
   // News
   $('news').innerHTML=newsItems.map(n=>{
