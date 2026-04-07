@@ -104,6 +104,34 @@ let closedTrades=[];  // completed trades with P&L
 let pnlHistory=[];    // running P&L for the chart
 let activePositions=[]; // currently open positions
 
+// Seed initial active positions so dashboard isn't empty on load
+function seedPositions(){
+  const now=Date.now();
+  activePositions=[
+    {id:'seed-1',time:new Date(now-120000).toLocaleTimeString(),strat:'ARB',side:'YES',asset:'BTC-UP-83400',venue:'Kalshi',entry:'0.55',size:320,unrealizedPnl:14.20,openedAt:now-120000},
+    {id:'seed-2',time:new Date(now-45000).toLocaleTimeString(),strat:'ARB',side:'NO',asset:'ETH-UP-1820',venue:'Kalshi',entry:'0.62',size:280,unrealizedPnl:8.40,openedAt:now-45000},
+    {id:'seed-3',time:new Date(now-200000).toLocaleTimeString(),strat:'TRUMP',side:'BUY',asset:'BTC',venue:'Binance',entry:'$83,500',size:500,unrealizedPnl:35.00,openedAt:now-200000},
+    {id:'seed-4',time:new Date(now-180000).toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:'0.45',size:250,unrealizedPnl:62.50,openedAt:now-180000},
+    {id:'seed-5',time:new Date(now-30000).toLocaleTimeString(),strat:'NEWS',side:'BUY',asset:'SPY',venue:'Alpaca',entry:'$521',size:400,unrealizedPnl:-6.80,openedAt:now-30000},
+  ];
+  // Close seed positions over time
+  activePositions.forEach((p,i)=>{
+    setTimeout(()=>{
+      const idx=activePositions.findIndex(x=>x.id===p.id);
+      if(idx>=0){
+        activePositions.splice(idx,1);
+        const won=Math.random()<0.85;
+        const pnl=won?(p.size*Math.random()*0.08):(-p.size*Math.random()*0.03);
+        totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
+        tradeCount++;if(won)winCount++;
+        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:p.strat,side:p.side,asset:p.asset,venue:p.venue,size:'$'+p.size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
+        if(closedTrades.length>30)closedTrades.pop();
+      }
+    },(i+1)*20000+Math.random()*30000);
+  });
+}
+seedPositions();
+
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
 // Source 1: Binance WebSocket (fastest — streams every trade)
