@@ -41,6 +41,10 @@ TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", 
 TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "20"))
 TRUMP_SCALE_BY_CONFIDENCE: bool = os.getenv("TRUMP_SCALE_BY_CONFIDENCE", "true").lower() == "true"
 
+# --- Twitter/X API ---
+TWITTER_BEARER_TOKEN: str = os.getenv("TWITTER_BEARER_TOKEN", "")
+TWITTER_TRUMP_USER_ID: str = os.getenv("TWITTER_TRUMP_USER_ID", "25073877")  # @realDonaldTrump
+
 # --- Claude API (for sentiment analysis) ---
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
@@ -51,8 +55,8 @@ CONFIRMATION_WINDOW_MS: int = int(os.getenv("CONFIRMATION_WINDOW_MS", "500"))
 MIN_CONTRACT_DURATION_SECONDS: int = int(os.getenv("MIN_CONTRACT_DURATION_SECONDS", "60"))
 
 # --- Target Markets ---
-TARGET_ASSETS: list[str] = os.getenv("TARGET_ASSETS", "BTC,ETH").split(",")
-TARGET_DURATIONS: list[int] = [int(x) for x in os.getenv("TARGET_DURATIONS", "15,60").split(",")]
+TARGET_ASSETS: list[str] = [x.strip() for x in os.getenv("TARGET_ASSETS", "BTC,ETH").split(",")]
+TARGET_DURATIONS: list[int] = [int(x.strip()) for x in os.getenv("TARGET_DURATIONS", "15,60").split(",")]
 
 # --- Position Sizing ---
 BASE_COPY_PCT: float = float(os.getenv("BASE_COPY_PCT", "0.05"))

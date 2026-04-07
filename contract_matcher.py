@@ -133,20 +133,26 @@ class ContractMatcher:
         )
 
     def _get_markets(self) -> list[KalshiMarket]:
-        """Get current markets, with caching."""
+        """Get ALL current Kalshi markets, with caching."""
         if time.time() - self._cache_time > self._cache_ttl:
             if self._kalshi.is_connected:
-                self._market_cache = self._kalshi.get_crypto_markets()
-                # Also get political/policy markets
+                all_markets: list[KalshiMarket] = []
+                # Fetch crypto markets
+                all_markets.extend(self._kalshi.get_crypto_markets())
+                # Fetch ALL open markets (politics, economics, tariffs, etc.)
                 try:
-                    resp = self._kalshi._client.get_markets(status="open", limit=200)
+                    resp = self._kalshi._client.get_markets(status="open", limit=500)
+                    seen_tickers = {m.ticker for m in all_markets}
                     for m in resp.get("markets", []):
                         parsed = self._kalshi._parse_market(m)
-                        if parsed:
-                            self._market_cache.append(parsed)
-                except Exception:
-                    pass
+                        if parsed and parsed.ticker not in seen_tickers:
+                            all_markets.append(parsed)
+                            seen_tickers.add(parsed.ticker)
+                except Exception as exc:
+                    logger.debug("Failed to fetch all Kalshi markets: %s", exc)
+                self._market_cache = all_markets
                 self._cache_time = time.time()
+                logger.info("Contract matcher cached %d Kalshi markets", len(self._market_cache))
         return self._market_cache
 
     def _paper_matches(self, sentiment: SentimentResult) -> list[ContractMatch]:

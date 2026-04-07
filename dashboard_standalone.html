@@ -376,20 +376,20 @@ function render(data) {
   }).join('');
 
   // Positions table
-  $('positions-table').innerHTML = data.positions.map(p =>
+  $('positions-table').innerHTML = data.positions.length > 0 ? data.positions.map(p =>
     '<tr>' +
-    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + p.title.substring(0,45) + '</div></td>' +
+    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + (p.title || '').substring(0,45) + '</div></td>' +
     '<td><span class="side-badge side-' + p.side.toLowerCase() + '">' + p.side + '</span></td>' +
-    '<td><span class="type-badge type-' + p.type + '">' + p.type + '</span></td>' +
+    '<td><span class="type-badge type-' + (p.type || 'longshot') + '">' + (p.type || '-') + '</span></td>' +
     '<td>' + p.entry_price.toFixed(2) + '</td>' +
     '<td>' + p.current_price.toFixed(2) + '</td>' +
     '<td>$' + p.size_usd.toFixed(0) + '</td>' +
     '<td class="' + pnlClass(p.pnl) + '">' + fmt(p.pnl) + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No open positions — waiting for real signals</td></tr>';
 
   // Signals table
-  $('signals-table').innerHTML = data.signals.map(s =>
+  $('signals-table').innerHTML = data.signals.length > 0 ? data.signals.map(s =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + s.time + '</td>' +
     '<td style="max-width:180px">' + s.ticker + '</td>' +
@@ -400,10 +400,10 @@ function render(data) {
     '<td><span class="score-bar"><span class="score-fill" style="width:' + (s.score*100) + '%;background:' + scoreColor(s.score) + '"></span></span>' + s.score.toFixed(2) + '</td>' +
     '<td class="action-' + s.action.toLowerCase() + '">' + s.action + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No signals yet — waiting for bot to scan markets</td></tr>';
 
   // Closed trades table
-  $('closed-table').innerHTML = data.closed_trades.map(c =>
+  $('closed-table').innerHTML = data.closed_trades.length > 0 ? data.closed_trades.map(c =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + c.closed + '</td>' +
     '<td>' + c.ticker + '</td>' +
@@ -414,7 +414,7 @@ function render(data) {
     '<td class="' + pnlClass(c.pnl) + '">' + fmt(c.pnl) + '</td>' +
     '<td><span class="side-badge ' + (c.result === 'win' ? 'side-yes' : 'side-no') + '">' + c.result.toUpperCase() + '</span></td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No closed trades yet — trades appear here after positions are exited</td></tr>';
 
   // Risk meters
   const risks = [
@@ -451,14 +451,12 @@ function render(data) {
   ).join('');
 }
 
-
-// Baked-in data for standalone viewing
-const BAKED_DATA = {"portfolio_value": 10549.8, "initial_balance": 10000.0, "total_pnl": 549.8, "roi_pct": 5.5, "peak_value": 10549.8, "total_exposure": 630.0, "unrealized_pnl": 3.75, "realized_pnl": 19.1, "equity_curve": [10000.07, 9999.8, 10000.26, 10010.48, 10010.75, 9994.58, 10000.37, 9998.96, 9998.16, 10001.35, 10005.94, 10021.7, 10031.38, 10034.51, 10027.45, 10017.07, 10021.83, 10039.36, 10041.66, 10042.18, 10050.36, 10034.72, 10032.77, 10040.45, 10052.73, 10051.64, 10057.96, 10062.74, 10073.93, 10062.37, 10070.99, 10054.62, 10024.98, 10019.5, 10010.31, 10022.62, 10032.39, 10019.56, 10031.53, 10021.3, 10022.07, 10020.34, 10023.51, 10035.13, 10044.59, 10050.59, 10060.19, 10067.73, 10062.01, 10055.2, 10051.36, 10059.15, 10057.95, 10087.78, 10079.75, 10068.36, 10079.38, 10098.24, 10106.11, 10117.94, 10136.86, 10137.53, 10122.25, 10117.67, 10130.9, 10115.38, 10117.58, 10122.42, 10120.43, 10130.91, 10139.68, 10169.34, 10178.58, 10173.07, 10168.13, 10159.95, 10173.18, 10168.18, 10169.14, 10179.93, 10173.05, 10171.33, 10151.03, 10139.84, 10134.83, 10141.62, 10157.74, 10159.32, 10164.26, 10168.08, 10182.9, 10195.42, 10200.5, 10190.17, 10202.81, 10209.18, 10225.7, 10227.14, 10252.38, 10249.87, 10270.79, 10273.97, 10269.57, 10257.83, 10257.82, 10276.7, 10288.3, 10298.37, 10271.66, 10281.99, 10290.46, 10285.66, 10279.93, 10281.7, 10304.2, 10293.34, 10290.01, 10308.15, 10304.6, 10302.03, 10305.0, 10291.9, 10296.34, 10283.62, 10296.04, 10297.88, 10327.08, 10332.25, 10350.44, 10336.6, 10336.93, 10342.61, 10365.36, 10346.99, 10360.68, 10369.58, 10389.78, 10400.13, 10402.55, 10398.09, 10384.91, 10389.06, 10388.56, 10414.6, 10409.07, 10414.71, 10397.68, 10394.73, 10399.66, 10411.35, 10430.53, 10431.8, 10420.19, 10427.48, 10435.48, 10443.18, 10436.58, 10451.98, 10454.83, 10465.03, 10482.12, 10491.23, 10496.47, 10524.1, 10528.82, 10527.07, 10530.21, 10549.8], "positions": [{"ticker": "SPORTS-NBA-UPSET-APR6", "title": "Will the 8-seed upset the 1-seed tonight?", "side": "NO", "type": "longshot", "category": "sports", "entry_price": 0.92, "current_price": 0.93, "size_usd": 285.0, "pnl": 2.85, "entry_time": "2h ago", "confidence": 0.72}, {"ticker": "ECON-FED-HOLD-APR", "title": "Will the Fed hold rates in April?", "side": "YES", "type": "favorite", "category": "economics", "entry_price": 0.78, "current_price": 0.8, "size_usd": 195.0, "pnl": 3.9, "entry_time": "5h ago", "confidence": 0.68}, {"ticker": "SPORTS-MLB-PIRATES-WIN", "title": "Will the Pirates win tonight?", "side": "NO", "type": "longshot", "category": "sports", "entry_price": 0.88, "current_price": 0.86, "size_usd": 150.0, "pnl": -3.0, "entry_time": "45m ago", "confidence": 0.61}], "signals": [{"time": "2m ago", "ticker": "ENT-OSCARS-ANIMATED-UPSET", "title": "Will an indie film win Best Animated Feature?", "side": "NO", "type": "longshot", "yes_price": 0.07, "edge": 0.028, "score": 0.71, "action": "TRADED", "status": "success"}, {"time": "18m ago", "ticker": "SPORTS-NFL-DRAFT-QB1", "title": "Will a QB go #1 overall?", "side": "YES", "type": "favorite", "yes_price": 0.82, "edge": 0.025, "score": 0.63, "action": "TRADED", "status": "success"}, {"time": "22m ago", "ticker": "SPORTS-GOLF-TIGER-WIN", "title": "Will Tiger Woods win the Masters?", "side": "NO", "type": "longshot", "yes_price": 0.04, "edge": 0.016, "score": 0.48, "action": "REJECTED", "status": "warning"}, {"time": "35m ago", "ticker": "POL-APPROVAL-ABOVE60", "title": "Will presidential approval exceed 60%?", "side": "NO", "type": "longshot", "yes_price": 0.11, "edge": 0.044, "score": 0.77, "action": "TRADED", "status": "success"}, {"time": "1h ago", "ticker": "ECON-CPI-UNDER-3", "title": "Will CPI come in under 3%?", "side": "YES", "type": "favorite", "yes_price": 0.74, "edge": 0.025, "score": 0.52, "action": "REJECTED", "status": "warning"}, {"time": "1h ago", "ticker": "SPORTS-UFC-UNDERDOG", "title": "Will the +400 underdog win?", "side": "NO", "type": "longshot", "yes_price": 0.09, "edge": 0.036, "score": 0.69, "action": "TRADED", "status": "success"}], "closed_trades": [{"ticker": "SPORTS-NHL-UPSET-APR5", "side": "NO", "type": "longshot", "entry": 0.91, "exit": 0.94, "pnl": 8.4, "result": "win", "closed": "3h ago"}, {"ticker": "ECON-JOBS-ABOVE-200K", "side": "YES", "type": "favorite", "entry": 0.76, "exit": 0.82, "pnl": 12.6, "result": "win", "closed": "6h ago"}, {"ticker": "SPORTS-SOCCER-DRAW", "side": "NO", "type": "longshot", "entry": 0.87, "exit": 0.72, "pnl": -22.5, "result": "loss", "closed": "8h ago"}, {"ticker": "ENT-GRAMMY-UPSET", "side": "NO", "type": "longshot", "entry": 0.93, "exit": 0.96, "pnl": 5.1, "result": "win", "closed": "12h ago"}, {"ticker": "POL-SENATE-VOTE-YES", "side": "YES", "type": "favorite", "entry": 0.8, "exit": 0.85, "pnl": 10.0, "result": "win", "closed": "14h ago"}, {"ticker": "SPORTS-F1-VERSTAPPEN", "side": "YES", "type": "favorite", "entry": 0.72, "exit": 0.68, "pnl": -8.0, "result": "loss", "closed": "18h ago"}, {"ticker": "SPORTS-MLB-DODGERS", "side": "NO", "type": "longshot", "entry": 0.9, "exit": 0.93, "pnl": 6.3, "result": "win", "closed": "20h ago"}, {"ticker": "ECON-RETAIL-UP", "side": "YES", "type": "favorite", "entry": 0.77, "exit": 0.81, "pnl": 7.2, "result": "win", "closed": "1d ago"}], "risk": {"halted": false, "daily_pnl": 17.95, "daily_pnl_pct": 0.17, "drawdown_pct": 0.0, "drawdown_limit": 35.0, "daily_limit": 15.0, "consecutive_losses": 1, "max_consec": 8, "positions_used": 3, "positions_max": 8, "category_exposure": {"sports": 4.1, "economics": 1.8, "politics": 0.0, "entertainment": 0.0}}, "performance": {"longshot": {"trades": 18, "wins": 14, "pnl": 82.4}, "favorite": {"trades": 12, "wins": 9, "pnl": 45.8}}, "win_rate": 75.0, "total_trades": 8, "wins": 6, "losses": 2, "uptime": "7d 4h 22m", "last_scan": "32s ago", "mode": "PAPER", "environment": "DEMO", "scan_interval": 300};
+// Initial load + auto-refresh
 function refresh() {
-  render(BAKED_DATA);
+  fetch('/api/state').then(r => r.json()).then(render).catch(console.error);
 }
 refresh();
-
+setInterval(refresh, 5000);
 </script>
 </body>
 </html>

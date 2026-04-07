@@ -230,8 +230,13 @@ class RiskManager:
                 # YES: we profit when price rises, lose when it drops
                 loss_pct = (position.avg_price - position.current_price) / position.avg_price
             else:
-                # NO: we profit when price drops, lose when it rises
-                loss_pct = (position.current_price - position.avg_price) / (1.0 - position.avg_price) if position.avg_price < 1.0 else 0.0
+                # NO: we bought NO at avg_price. We profit when contract goes to 0.
+                # We LOSE when price rises (NO becomes less valuable).
+                # Loss = how much our NO position has declined in value.
+                # NO value = 1 - contract_price. We bought at (1-avg_price), now worth (1-current_price).
+                no_entry = 1.0 - position.avg_price
+                no_now = 1.0 - position.current_price
+                loss_pct = (no_entry - no_now) / no_entry if no_entry > 0 else 0.0
             if loss_pct >= config.STOP_LOSS_PCT:
                 return True, f"Stop loss triggered: {loss_pct:.2%} loss (side={position.side.value})"
 

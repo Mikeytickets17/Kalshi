@@ -355,12 +355,14 @@ function render(data) {
   $('realized-pnl').textContent = fmt(data.realized_pnl);
   $('realized-pnl').className = 'stat-value ' + (data.realized_pnl >= 0 ? 'green' : 'red');
   $('total-trades').textContent = data.total_trades + ' closed trades';
-  $('drawdown').textContent = data.risk.drawdown_pct.toFixed(2) + '%';
-  $('drawdown').className = 'stat-value ' + (data.risk.drawdown_pct > 15 ? 'red' : data.risk.drawdown_pct > 8 ? 'amber' : 'green');
-  $('last-scan').textContent = 'Last scan: ' + data.last_scan;
-  $('uptime').textContent = data.uptime;
+  var dd = (data.drawdown_pct || (data.risk && data.risk.drawdown_pct) || 0);
+  $('drawdown').textContent = dd.toFixed(2) + '%';
+  $('drawdown').className = 'stat-value ' + (dd > 15 ? 'red' : dd > 8 ? 'amber' : 'green');
+  $('last-scan').textContent = 'Last scan: ' + (data.last_scan || '--');
+  $('uptime').textContent = data.uptime || '--';
   $('peak-label').textContent = 'Peak: $' + data.peak_value.toLocaleString(undefined, {minimumFractionDigits:2});
-  $('positions-count').textContent = data.positions.length + '/' + data.risk.positions_max;
+  var posMax = (data.risk && data.risk.positions_max) || 8;
+  $('positions-count').textContent = data.positions.length + '/' + posMax;
   $('scan-time').textContent = data.last_scan;
 
   // Equity chart
@@ -376,20 +378,20 @@ function render(data) {
   }).join('');
 
   // Positions table
-  $('positions-table').innerHTML = data.positions.map(p =>
+  $('positions-table').innerHTML = data.positions.length > 0 ? data.positions.map(p =>
     '<tr>' +
-    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + p.title.substring(0,45) + '</div></td>' +
+    '<td style="max-width:200px">' + p.ticker + '<div style="font-size:10px;color:var(--muted)">' + (p.title || '').substring(0,45) + '</div></td>' +
     '<td><span class="side-badge side-' + p.side.toLowerCase() + '">' + p.side + '</span></td>' +
-    '<td><span class="type-badge type-' + p.type + '">' + p.type + '</span></td>' +
+    '<td><span class="type-badge type-' + (p.type || 'longshot') + '">' + (p.type || '-') + '</span></td>' +
     '<td>' + p.entry_price.toFixed(2) + '</td>' +
     '<td>' + p.current_price.toFixed(2) + '</td>' +
     '<td>$' + p.size_usd.toFixed(0) + '</td>' +
     '<td class="' + pnlClass(p.pnl) + '">' + fmt(p.pnl) + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No open positions — waiting for real signals</td></tr>';
 
   // Signals table
-  $('signals-table').innerHTML = data.signals.map(s =>
+  $('signals-table').innerHTML = data.signals.length > 0 ? data.signals.map(s =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + s.time + '</td>' +
     '<td style="max-width:180px">' + s.ticker + '</td>' +
@@ -400,10 +402,10 @@ function render(data) {
     '<td><span class="score-bar"><span class="score-fill" style="width:' + (s.score*100) + '%;background:' + scoreColor(s.score) + '"></span></span>' + s.score.toFixed(2) + '</td>' +
     '<td class="action-' + s.action.toLowerCase() + '">' + s.action + '</td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No signals yet — waiting for bot to scan markets</td></tr>';
 
   // Closed trades table
-  $('closed-table').innerHTML = data.closed_trades.map(c =>
+  $('closed-table').innerHTML = data.closed_trades.length > 0 ? data.closed_trades.map(c =>
     '<tr>' +
     '<td style="color:var(--muted);white-space:nowrap">' + c.closed + '</td>' +
     '<td>' + c.ticker + '</td>' +
@@ -414,14 +416,15 @@ function render(data) {
     '<td class="' + pnlClass(c.pnl) + '">' + fmt(c.pnl) + '</td>' +
     '<td><span class="side-badge ' + (c.result === 'win' ? 'side-yes' : 'side-no') + '">' + c.result.toUpperCase() + '</span></td>' +
     '</tr>'
-  ).join('');
+  ).join('') : '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No closed trades yet — trades appear here after positions are exited</td></tr>';
 
   // Risk meters
+  var r = data.risk || {};
   const risks = [
-    {label: 'Daily P&L', val: Math.abs(data.risk.daily_pnl_pct), max: data.risk.daily_limit, display: data.risk.daily_pnl_pct.toFixed(2) + '% / -' + data.risk.daily_limit + '%'},
-    {label: 'Drawdown', val: data.risk.drawdown_pct, max: data.risk.drawdown_limit, display: data.risk.drawdown_pct.toFixed(2) + '% / ' + data.risk.drawdown_limit + '%'},
-    {label: 'Consecutive Losses', val: data.risk.consecutive_losses, max: data.risk.max_consec, display: data.risk.consecutive_losses + ' / ' + data.risk.max_consec},
-    {label: 'Open Positions', val: data.risk.positions_used, max: data.risk.positions_max, display: data.risk.positions_used + ' / ' + data.risk.positions_max},
+    {label: 'Daily P&L', val: Math.abs(r.daily_pnl_pct || 0), max: r.daily_limit || 15, display: (r.daily_pnl_pct || 0).toFixed(2) + '% / -' + (r.daily_limit || 15) + '%'},
+    {label: 'Drawdown', val: r.drawdown_pct || dd || 0, max: r.drawdown_limit || 35, display: (r.drawdown_pct || dd || 0).toFixed(2) + '% / ' + (r.drawdown_limit || 35) + '%'},
+    {label: 'Consecutive Losses', val: r.consecutive_losses || 0, max: r.max_consec || 8, display: (r.consecutive_losses || 0) + ' / ' + (r.max_consec || 8)},
+    {label: 'Open Positions', val: r.positions_used || data.positions.length, max: r.positions_max || 8, display: (r.positions_used || data.positions.length) + ' / ' + (r.positions_max || 8)},
   ];
   $('risk-meters').innerHTML = risks.map(r => {
     const pct = (r.val / r.max) * 100;

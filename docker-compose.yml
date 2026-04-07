@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: kalshi-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./bot_state.json:/app/bot_state.json
+      - ./bot.log:/app/bot.log
+    command: python bot.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json; json.load(open('bot_state.json'))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: .
+    container_name: kalshi-dashboard
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./bot_state.json:/app/bot_state.json
+    command: python dashboard.py
+    depends_on:
+      - bot
+
+  # Optional: Telegram webhook for alerts
+  # Uncomment if you want webhook-based Telegram alerts
+  # telegram:
+  #   build: .
+  #   container_name: kalshi-telegram
+  #   env_file: .env
+  #   command: python -c "from notifier import TelegramNotifier; ..."

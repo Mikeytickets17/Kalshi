@@ -20,6 +20,7 @@ import time
 from typing import Optional
 
 import config
+import shared_state
 from exchange import BinanceExecutor, TradeResult
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
@@ -90,6 +91,9 @@ class LatencyArbBot:
         self._stock_trader = StockTrader()
         self._news_positions: list[dict] = []
 
+        # Initialize shared state for the dashboard
+        shared_state.init(self._portfolio_value)
+
         logger.info(
             "LatencyArbBot initialized: paper=%s portfolio=$%.2f",
             self._paper_mode, self._portfolio_value,
@@ -109,6 +113,12 @@ class LatencyArbBot:
         logger.info("Max positions: %d", config.MAX_CONCURRENT_POSITIONS)
         logger.info("=" * 64)
 
+        # Send startup notification
+        self._notifier.notify_startup(
+            self._portfolio_value,
+            "PAPER" if self._paper_mode else "LIVE",
+        )
+
         tasks = [
             # Strategy 1: Latency Arbitrage
             asyncio.create_task(self._price_feed.start(), name="price_feed"),
@@ -125,6 +135,10 @@ class LatencyArbBot:
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
             asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
+            # State persistence for dashboard
+            asyncio.create_task(self._state_flusher(), name="state_flush"),
+            # Daily Telegram summary
+            asyncio.create_task(self._daily_summary_scheduler(), name="daily_summary"),
         ]
 
         try:
@@ -140,10 +154,50 @@ class LatencyArbBot:
                 if not task.done():
                     task.cancel()
 
+    async def _state_flusher(self) -> None:
+        """Periodically flush shared state to disk for the dashboard."""
+        while self._running:
+            try:
+                shared_state.periodic_flush()
+                # Also push risk state to shared_state
+                risk_summary = self._risk_manager.get_summary()
+                shared_state.update_risk(risk_summary)
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+
+    async def _daily_summary_scheduler(self) -> None:
+        """Send daily Telegram summary at midnight UTC."""
+        logger.info("Daily summary scheduler started")
+        while self._running:
+            try:
+                # Calculate seconds until next midnight UTC
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                wait_secs = (midnight - now).total_seconds()
+                await asyncio.sleep(min(wait_secs, 3600))  # Check every hour at most
+
+                # Send summary at midnight
+                now2 = datetime.now(timezone.utc)
+                if now2.hour == 0 and now2.minute < 5:
+                    risk_summary = self._risk_manager.get_summary()
+                    self._notifier.notify_daily_summary(
+                        portfolio_value=self._portfolio_value,
+                        daily_pnl=risk_summary.get("daily_pnl", 0),
+                        open_positions=len(self._active_positions) + len(self._trump_positions) + len(self._news_positions),
+                        risk_summary=risk_summary,
+                    )
+                    await asyncio.sleep(300)  # Don't send again for 5 min
+            except Exception as exc:
+                logger.error("Daily summary error: %s", exc)
+                await asyncio.sleep(60)
+
     async def shutdown(self, reason: str = "Manual shutdown") -> None:
         if not self._running:
             return
         self._running = False
+        shared_state.set_bot_running(False)
         logger.info("Shutting down: %s", reason)
 
         self._kalshi.cancel_all()
@@ -266,6 +320,25 @@ class LatencyArbBot:
             evaluation, size_usdc, kalshi_result.filled_price or evaluation.target_price
         )
 
+        # Record to shared state for dashboard
+        shared_state.record_trade_opened(
+            trade_id=opp.market_id,
+            strategy="ARB",
+            side=evaluation.side.value,
+            asset=opp.asset,
+            venue="Kalshi",
+            entry_price=kalshi_result.filled_price or evaluation.target_price,
+            size_usd=size_usdc,
+            confidence=opp.edge,
+            reason=f"CEX ${opp.cex_price:.0f} vs strike ${opp.contract_strike:.0f} ({opp.edge*100:.1f}% edge)",
+        )
+        shared_state.record_signal(
+            strategy="ARB", side=evaluation.side.value, asset=opp.asset,
+            venue="Kalshi", confidence=opp.edge,
+            reason=f"Edge {opp.edge*100:.1f}% latency={opp.latency_ms:.0f}ms",
+            action="TRADED",
+        )
+
         logger.info(
             "TRADED: %s %s $%.2f @ %.4f edge=%.1f%% (pos %d/%d)",
             evaluation.side.value, ticker, size_usdc,
@@ -296,9 +369,10 @@ class LatencyArbBot:
         if self._paper_mode:
             age = time.time() - position.entry_time
             if age > random.uniform(300, 900):
-                # Simulate win/loss based on the edge at entry
-                # High-edge entries win ~90-95% of the time
-                win_prob = min(0.70 + position.avg_price * 0.25, 0.96)
+                # Simulate win/loss: lower entry price = more edge = higher win rate
+                # Buying YES at 0.40 has more upside than at 0.90
+                edge_factor = 1.0 - position.avg_price  # higher when entry is lower
+                win_prob = min(0.60 + edge_factor * 0.35, 0.95)
                 if random.random() < win_prob:
                     # Won: contract resolves at $1.00
                     if position.side == Side.YES:
@@ -339,6 +413,15 @@ class LatencyArbBot:
 
         self._notifier.notify_trade_closed(position, pnl, reason)
 
+        # Record to shared state for dashboard
+        shared_state.record_trade_closed(
+            trade_id=market_id,
+            pnl=pnl,
+            exit_price=position.current_price,
+            reason=reason,
+        )
+        shared_state.update_portfolio(self._portfolio_value)
+
         wr = self._win_count / max(self._trade_count, 1) * 100
         logger.info(
             "%s %s pnl=$%+.2f (total: %d trades, %.1f%% WR, portfolio=$%.2f)",
@@ -366,8 +449,22 @@ class LatencyArbBot:
                     post.text[:80], post.source,
                 )
 
+                # Record trump post to shared state for dashboard
+                shared_state.record_trump_post(
+                    text=post.text, source=post.source,
+                )
+
                 # Analyze sentiment with Claude (or rule-based fallback)
                 sentiment = await self._sentiment.analyze(post)
+
+                # Alert: Trump post detected with sentiment
+                self._notifier.notify_trump_post_detected(
+                    post_text=post.text,
+                    source=post.source,
+                    sentiment=sentiment.direction,
+                    confidence=sentiment.confidence,
+                    latency_ms=post.detection_latency_ms,
+                )
 
                 if not sentiment.is_market_relevant:
                     logger.info("Post not market-relevant, skipping")
@@ -439,6 +536,31 @@ class LatencyArbBot:
                         "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
                     })
 
+                    trade_id = f"trump-btc-{int(time.time()*1000)}"
+                    self._trump_positions[-1]["trade_id"] = trade_id
+                    shared_state.record_trade_opened(
+                        trade_id=trade_id,
+                        strategy="TRUMP",
+                        side=result.side,
+                        asset="BTC",
+                        venue="Binance",
+                        entry_price=result.filled_price,
+                        size_usd=result.filled_usd,
+                        confidence=sentiment.confidence,
+                        reason=post.text[:80],
+                    )
+                    shared_state.record_trump_post(
+                        text=post.text, source=post.source,
+                        sentiment=sentiment.direction,
+                        confidence=sentiment.confidence,
+                    )
+
+                    self._notifier.notify_trump_trade(
+                        side=result.side, asset="BTC", venue="Binance",
+                        size_usd=result.filled_usd, entry_price=result.filled_price,
+                        confidence=sentiment.confidence, post_text=post.text,
+                    )
+
                     logger.info(
                         "TRUMP BTC TRADE: %s BTC $%.2f @ $%.2f (conf=%.2f, expected=%.1f%%, exec=%dms)",
                         result.side, result.filled_usd, result.filled_price,
@@ -478,6 +600,20 @@ class LatencyArbBot:
                                 "ticker": match.ticker,
                                 "type": "kalshi_contract",
                             })
+                            kalshi_trade_id = f"trump-k-{int(time.time()*1000)}"
+                            self._trump_positions[-1]["trade_id"] = kalshi_trade_id
+                            shared_state.record_trade_opened(
+                                trade_id=kalshi_trade_id,
+                                strategy="TRUMP",
+                                side=match.side,
+                                asset=match.ticker,
+                                venue="Kalshi",
+                                entry_price=order.filled_price,
+                                size_usd=order.filled_size,
+                                confidence=match.confidence,
+                                reason=f"Contract match: {match.keywords_matched}",
+                            )
+
                             logger.info(
                                 "TRUMP KALSHI TRADE: %s %s $%.2f @ %.2f (match=%.0f%%, conf=%.2f, kw=%s)",
                                 match.side, match.ticker, contract_size, order.filled_price,
@@ -502,11 +638,20 @@ class LatencyArbBot:
                             result = self._exchange.buy(tp["asset"], tp["size_usd"])
 
                         if result.success:
-                            # Calculate PnL
-                            if tp["side"] == "BUY":
-                                pnl = (result.filled_price - tp["entry_price"]) * tp["qty"]
+                            # Calculate PnL — use qty for spot, size_usd for contracts
+                            if tp.get("type") == "kalshi_contract" or tp["qty"] == 0:
+                                # Kalshi contract: P&L = (exit - entry) * contracts
+                                # size_usd was the cost, exit is the contract resolution
+                                if tp["side"] in ("YES", "BUY"):
+                                    pnl = tp["size_usd"] * (result.filled_price / max(tp["entry_price"], 0.01) - 1)
+                                else:
+                                    pnl = tp["size_usd"] * (1 - result.filled_price / max(tp["entry_price"], 0.01))
                             else:
-                                pnl = (tp["entry_price"] - result.filled_price) * tp["qty"]
+                                # Spot BTC/ETH: P&L = price_change * quantity
+                                if tp["side"] == "BUY":
+                                    pnl = (result.filled_price - tp["entry_price"]) * tp["qty"]
+                                else:
+                                    pnl = (tp["entry_price"] - result.filled_price) * tp["qty"]
 
                             won = pnl > 0
                             if won:
@@ -516,12 +661,30 @@ class LatencyArbBot:
                             self._portfolio_value += pnl
                             self._risk_manager.record_trade_result(pnl, source_wallet="trump_news")
 
+                            # Record to shared state
+                            trade_id = tp.get("trade_id", f"trump-exit-{int(time.time()*1000)}")
+                            shared_state.record_trade_closed(
+                                trade_id=trade_id,
+                                pnl=pnl,
+                                exit_price=result.filled_price,
+                                reason=f"Hold period expired ({config.TRUMP_HOLD_MINUTES}m)",
+                            )
+                            shared_state.update_portfolio(self._portfolio_value)
+
                             logger.info(
                                 "TRUMP EXIT: %s BTC pnl=$%+.2f (entry=$%.2f exit=$%.2f held=%dm)",
                                 "WIN" if won else "LOSS", pnl,
                                 tp["entry_price"], result.filled_price,
                                 config.TRUMP_HOLD_MINUTES,
                             )
+
+                        else:
+                            # Exit failed — increment retry counter, remove after 3 retries
+                            tp["_exit_retries"] = tp.get("_exit_retries", 0) + 1
+                            if tp["_exit_retries"] >= 3:
+                                logger.warning("TRUMP EXIT FAILED after 3 retries, dropping position: %s", tp.get("asset"))
+                                self._trump_positions.remove(tp)
+                            continue
 
                         self._trump_positions.remove(tp)
 
@@ -607,6 +770,7 @@ class LatencyArbBot:
                 else:
                     result = self._exchange.sell(action.asset, size)
                 if result.success:
+                    news_tid = f"news-bin-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -617,7 +781,20 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": news_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=news_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Binance",
+                        entry_price=result.filled_price, size_usd=size,
+                        confidence=action.confidence, reason=news.headline[:80],
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
+                    self._notifier.notify_news_trade(
+                        side=action.side, asset=action.asset, venue="Binance",
+                        size_usd=size, entry_price=result.filled_price,
+                        confidence=action.confidence, headline=news.headline,
+                    )
                     logger.info(
                         "NEWS TRADE: %s %s $%.2f on Binance (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
@@ -630,6 +807,7 @@ class LatencyArbBot:
                 else:
                     result = self._stock_trader.sell(action.asset, size)
                 if result.success:
+                    stock_tid = f"news-alp-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -640,7 +818,20 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": stock_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=stock_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Alpaca",
+                        entry_price=result.filled_price, size_usd=size,
+                        confidence=action.confidence, reason=news.headline[:80],
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
+                    self._notifier.notify_news_trade(
+                        side=action.side, asset=action.asset, venue="Alpaca",
+                        size_usd=size, entry_price=result.filled_price,
+                        confidence=action.confidence, headline=news.headline,
+                    )
                     logger.info(
                         "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
                         action.side, action.asset, size, action.confidence, action.reasoning[:40],
@@ -649,7 +840,6 @@ class LatencyArbBot:
 
             elif action.venue == "kalshi_contract" and action.kalshi_keywords:
                 from contract_matcher import ContractMatch
-                # Search Kalshi for matching contracts
                 matches = self._contract_matcher.find_matches(
                     type("S", (), {
                         "kalshi_keywords": action.kalshi_keywords,
@@ -660,6 +850,7 @@ class LatencyArbBot:
                 for match in matches[:1]:
                     order = self._contract_matcher.execute_match(match, size)
                     if order and order.success:
+                        kalshi_tid = f"news-kal-{int(time.time()*1000)}"
                         self._trade_count += 1
                         self._news_positions.append({
                             "entry_time": time.time(),
@@ -670,7 +861,15 @@ class LatencyArbBot:
                             "entry_price": order.filled_price,
                             "hold_until": time.time() + action.hold_minutes * 60,
                             "headline": news.headline[:80],
+                            "trade_id": kalshi_tid,
                         })
+                        shared_state.record_trade_opened(
+                            trade_id=kalshi_tid, strategy="NEWS", side=match.side,
+                            asset=match.ticker, venue="Kalshi",
+                            entry_price=order.filled_price, size_usd=size,
+                            confidence=action.confidence, reason=news.headline[:80],
+                        )
+                        shared_state.record_news(news.headline, news.source, news.priority, news.category)
                         logger.info(
                             "KALSHI TRADE: %s %s $%.2f (matched=%s, conf=%.2f)",
                             match.side, match.ticker, size, match.keywords_matched, action.confidence,
@@ -678,13 +877,13 @@ class LatencyArbBot:
                         return True
 
             elif action.venue == "binance_futures":
-                # Futures with leverage
                 leveraged_size = size * action.leverage
                 if action.side in ("LONG", "BUY"):
                     result = self._exchange.buy(action.asset, leveraged_size)
                 else:
                     result = self._exchange.sell(action.asset, leveraged_size)
                 if result.success:
+                    fut_tid = f"news-fut-{int(time.time()*1000)}"
                     self._trade_count += 1
                     self._news_positions.append({
                         "entry_time": time.time(),
@@ -697,7 +896,15 @@ class LatencyArbBot:
                         "entry_price": result.filled_price,
                         "hold_until": time.time() + action.hold_minutes * 60,
                         "headline": news.headline[:80],
+                        "trade_id": fut_tid,
                     })
+                    shared_state.record_trade_opened(
+                        trade_id=fut_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Binance Futures",
+                        entry_price=result.filled_price, size_usd=leveraged_size,
+                        confidence=action.confidence, reason=f"{action.leverage}x leverage: {news.headline[:60]}",
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
                     logger.info(
                         "FUTURES TRADE: %s %s $%.2f (%dx leverage, margin=$%.2f, conf=%.2f)",
                         action.side, action.asset, leveraged_size, action.leverage,
@@ -735,6 +942,15 @@ class LatencyArbBot:
                         self._available_balance += size + pnl
                         self._portfolio_value += pnl
                         self._risk_manager.record_trade_result(pnl, source_wallet=venue)
+
+                        # Record to shared state
+                        news_trade_id = pos.get("trade_id", f"news-exit-{int(time.time()*1000)}")
+                        shared_state.record_trade_closed(
+                            trade_id=news_trade_id,
+                            pnl=pnl,
+                            reason=f"Hold expired: {pos.get('headline', '')[:40]}",
+                        )
+                        shared_state.update_portfolio(self._portfolio_value)
 
                         logger.info(
                             "NEWS EXIT: %s %s %s pnl=$%+.2f (held %dm, headline=%s)",
@@ -779,12 +995,48 @@ async def main() -> None:
             pass
 
 
+def _print_startup_status() -> None:
+    """Show what's configured and what's missing."""
+    print("=" * 60)
+    print("  KALSHI MULTI-STRATEGY TRADING BOT v5.0")
+    print("=" * 60)
+    print(f"  Mode:      {'PAPER (simulated)' if config.PAPER_MODE else 'LIVE (real money)'}")
+    print(f"  Balance:   ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
+    print(f"  Kalshi:    {'DEMO API' if config.KALSHI_USE_DEMO else 'PRODUCTION API'}")
+    print()
+
+    checks = [
+        ("Kalshi API", bool(config.KALSHI_API_KEY_ID), "Contracts + arb trading"),
+        ("Binance API", bool(config.BINANCE_API_KEY), "BTC/ETH spot trading"),
+        ("Alpaca API", bool(config.ALPACA_API_KEY), "US stock trading"),
+        ("Claude API", bool(config.ANTHROPIC_API_KEY), "AI sentiment analysis"),
+        ("Telegram", bool(config.TELEGRAM_BOT_TOKEN), "Trade notifications"),
+    ]
+
+    print("  API Keys:")
+    for name, configured, desc in checks:
+        status = "READY" if configured else "NOT SET (paper mode)"
+        icon = "+" if configured else "-"
+        print(f"    [{icon}] {name:12s} {status:30s} {desc}")
+
+    strategies = [
+        "1. LATENCY ARB:   CEX price vs Kalshi crypto contracts",
+        "2. TRUMP NEWS:    Truth Social → Claude → BTC + Kalshi",
+        "3. BREAKING NEWS:  Reuters/AP/Fed → stocks + BTC + Kalshi",
+        "4. KALSHI MATCH:   Any news → matching Kalshi contracts",
+    ]
+    print()
+    print("  Strategies:")
+    for s in strategies:
+        print(f"    {s}")
+
+    print()
+    print("  Dashboard: Start with 'python dashboard.py' → http://localhost:5050")
+    print("  Or use:    ./start.sh (starts both)")
+    print("=" * 60)
+    print()
+
+
 if __name__ == "__main__":
-    print("Starting Kalshi Arb + Trump News Trading Bot...")
-    print(f"Mode: {'PAPER' if config.PAPER_MODE else 'LIVE'}")
-    print(f"Strategy 1: CEX price vs Kalshi crypto contracts")
-    print(f"Strategy 2: Trump Truth Social → Claude → Binance BTC")
-    print(f"Edge threshold: {config.EDGE_THRESHOLD_PCT*100:.1f}%")
-    print(f"Kalshi: {'DEMO' if config.KALSHI_USE_DEMO else 'PRODUCTION'}")
-    print(f"Paper balance: ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
+    _print_startup_status()
     asyncio.run(main())

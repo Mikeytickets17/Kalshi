@@ -68,7 +68,8 @@ class PriceState:
         if len(prices) == 2:
             spread = abs(self.binance_price - self.coinbase_price) / self.consensus_price
             freshness = min(1.0, 1.0 - (time.time() - min(self.binance_ts, self.coinbase_ts)) / 5.0)
-            self.confidence = max(0, (1.0 - spread * 50) * freshness)
+            # spread * 20: 5% spread = 0 confidence, 1% = 0.8, 0.1% = 0.98
+            self.confidence = max(0, (1.0 - spread * 20) * freshness)
         elif len(prices) == 1:
             self.confidence = 0.7  # Single source, lower confidence
         else:

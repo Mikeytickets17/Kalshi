@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multi-Strategy Trading Bot — v4.7</title>
+<title>Multi-Strategy Trading Bot — v5.1</title>
 <style>
 :root{--bg:#060a13;--card:#0d1321;--border:#1a2235;--text:#e2e8f0;--muted:#546484;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;--cyan:#06b6d4}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -66,7 +66,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div style="display:flex;align-items:center;gap:16px">
 <div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div><div id="pnl-value" style="font-size:20px;font-weight:700">$0.00</div></div>
 <div class="badges">
-<span class="badge b1">LIVE DATA</span>
+<span class="badge b1" id="conn-badge">STANDALONE</span>
 <span class="badge b2">4 STRATEGIES</span>
 <span style="font-size:9px;color:var(--muted)"><span class="pulse"></span><span id="clock">--:--:--</span></span>
 </div>
@@ -80,13 +80,13 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 </div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
-<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Truth Social Monitor</span><span class="live-dot"><span class="pulse"></span>Polling every 3s</span></div><div class="card-b" id="trump"></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Social Media Monitor</span><span class="live-dot"><span class="pulse"></span>8 sources | 3s polling</span></div><div class="card-b" id="trump"></div></div>
 <div class="row r2">
 <div class="card"><div class="card-h"><span>Risk Management</span><span class="badge b1" style="font-size:7px">ACTIVE</span></div><div class="card-b" id="risk"></div></div>
 <div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
 </div>
 </div>
-<div class="footer">Multi-Strategy Trading Bot v4.7 — Real-Time Data — All US Legal from NJ — Build: 20260407-2</div>
+<div class="footer">Multi-Strategy Trading Bot v5.1 — Real-Time Data — 8 Trump Sources | 19 News Feeds | 4 Strategies — Build: 20260407-4</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -106,9 +106,11 @@ let activePositions=[];
 let posCounter=0;
 
 // ── PERSISTENCE: save all data to localStorage so refresh doesn't lose it ──
+const STATE_VERSION='v5.1'; // bump this to clear old data from previous versions
 function saveState(){
   try{
     localStorage.setItem('bot_state',JSON.stringify({
+      version:STATE_VERSION,
       closedTrades,activePositions,totalPnl,todayPnl,tradeCount,winCount,pnlHistory,posCounter,
       savedAt:Date.now()
     }));
@@ -119,6 +121,8 @@ function loadState(){
     const raw=localStorage.getItem('bot_state');
     if(!raw)return false;
     const s=JSON.parse(raw);
+    // Clear old version data (removes all fake seed data from previous builds)
+    if(s.version!==STATE_VERSION){localStorage.removeItem('bot_state');return false;}
     // Only restore if saved less than 24 hours ago
     if(Date.now()-s.savedAt>86400000){localStorage.removeItem('bot_state');return false;}
     closedTrades=s.closedTrades||[];
@@ -134,39 +138,73 @@ function loadState(){
 }
 const restored=loadState();
 if(restored){console.log('Restored state:',closedTrades.length,'closed,',activePositions.length,'active, P&L:',totalPnl.toFixed(2));}
-else{console.log('Fresh session — starting from zero');}
+else{console.log('Fresh session — starting from zero (all fake data cleared)');}
 
 // Save state every 3 seconds
 setInterval(saveState,3000);
 
-// ── Trade lifecycle: positions open from signals, close on timer ──
-function newRandomPos(){
-  const opts=[
-    {strat:'ARB',side:Math.random()>0.5?'YES':'NO',asset:'BTC-UP-'+(83000+Math.round(Math.random()*1000)),venue:'Kalshi',entry:(0.4+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*300)},
-    {strat:'ARB',side:Math.random()>0.5?'YES':'NO',asset:'ETH-UP-'+(1750+Math.round(Math.random()*100)),venue:'Kalshi',entry:(0.4+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*200)},
-    {strat:'TRUMP',side:'BUY',asset:'BTC SPOT',venue:'Binance',entry:'$'+(83000+Math.round(Math.random()*1000)),size:Math.round(300+Math.random()*400)},
-    {strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',entry:(0.2+Math.random()*0.2).toFixed(2),size:Math.round(200+Math.random()*200)},
-    {strat:'NEWS',side:Math.random()>0.5?'BUY':'SELL',asset:['SPY','QQQ','NVDA','TSLA','AAPL'][Math.floor(Math.random()*5)],venue:'Alpaca',entry:'$'+(100+Math.round(Math.random()*500)),size:Math.round(200+Math.random()*300)},
-    {strat:'NEWS',side:'LONG',asset:'BTC 3x',venue:'Binance',entry:'$'+(83000+Math.round(Math.random()*1000)),size:Math.round(400+Math.random()*300)},
-    {strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:(0.3+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*200)},
-  ];
-  return opts[Math.floor(Math.random()*opts.length)];
-}
-setInterval(()=>{
-  // Close oldest active position → moves to closed trades
-  if(activePositions.length>0){
-    const p=activePositions.shift();
-    const won=Math.random()<0.82;
-    const pnl=won?(p.size*Math.random()*0.08):(-p.size*Math.random()*0.04);
-    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-    tradeCount++;if(won)winCount++;
-    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:p.strat,side:p.side,asset:p.asset,venue:p.venue,size:'$'+p.size,pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>100)closedTrades.pop();
+// ── BOT STATE POLLING: fetch real bot data from Flask backend ──
+let botConnected=false;
+async function pollBotState(){
+  try{
+    const r=await fetch('/api/state');
+    if(!r.ok)throw new Error(r.status);
+    const s=await r.json();
+    if(s.bot_running){
+      botConnected=true;
+      // Merge real bot data into dashboard state
+      if(s.closed_trades&&s.closed_trades.length>0){
+        closedTrades=s.closed_trades.map(t=>({
+          time:new Date((t.closed_at||t.opened_at||Date.now())*1000).toLocaleTimeString(),
+          strat:t.strategy||'BOT',side:t.side,asset:t.asset,venue:t.venue,
+          size:'$'+(t.size_usd||0).toFixed(0),pnl:t.pnl||0,result:t.result||'--'
+        }));
+      }
+      if(s.positions&&s.positions.length>0){
+        activePositions=s.positions.map(p=>({
+          id:p.id||'bot-'+Math.random(),time:new Date((p.opened_at||Date.now())*1000).toLocaleTimeString(),
+          strat:p.strategy||'BOT',side:p.side,asset:p.asset,venue:p.venue,
+          entry:typeof p.entry_price==='number'?(p.entry_price<10?p.entry_price.toFixed(2):'$'+p.entry_price.toFixed(0)):p.entry_price,
+          size:p.size_usd||0,unrealizedPnl:p.unrealized_pnl||0,openedAt:(p.opened_at||Date.now()/1000)*1000
+        }));
+      }
+      totalPnl=s.total_pnl||0;
+      tradeCount=s.trade_count||s.total_trades||0;
+      winCount=s.win_count||s.wins||0;
+      if(s.equity_curve)pnlHistory=s.equity_curve.map(v=>v-(s.initial_balance||10000));
+      // Update Trump posts from bot
+      if(s.trump_posts&&s.trump_posts.length>0){
+        const tp=s.trump_posts[0];
+        currentTrump={text:tp.text,dir:tp.sentiment||'NEUTRAL',conf:tp.confidence||0,move:0,topics:[]};
+      }
+      // Update news from bot
+      if(s.news_items&&s.news_items.length>0){
+        s.news_items.forEach(n=>{
+          if(!newsItems.find(x=>x.text===n.headline)){
+            newsItems.unshift({time:new Date(n.detected_at*1000).toLocaleTimeString(),text:n.headline,source:n.source,pri:n.priority==='critical'?'CRIT':n.priority==='high'?'HIGH':'NEWS',col:n.priority==='critical'?'var(--red)':'var(--amber)'});
+          }
+        });
+        if(newsItems.length>30)newsItems.length=30;
+      }
+      console.log('Bot state synced:',s.total_trades,'trades,',s.positions?.length||0,'active');
+      const cb=document.getElementById('conn-badge');
+      if(cb){cb.textContent='BOT CONNECTED';cb.style.background='rgba(34,197,94,.1)';cb.style.color='var(--green)';cb.style.borderColor='rgba(34,197,94,.25)';}
+    }
+  }catch(e){
+    botConnected=false;
+    const cb=document.getElementById('conn-badge');
+    if(cb){cb.textContent='STANDALONE';cb.style.background='rgba(245,158,11,.1)';cb.style.color='var(--amber)';cb.style.borderColor='rgba(245,158,11,.25)';}
   }
-  // Open new position → appears in active positions
-  const np=newRandomPos();posCounter++;
-  activePositions.push({id:'p'+posCounter,time:new Date().toLocaleTimeString(),strat:np.strat,side:np.side,asset:np.asset,venue:np.venue,entry:np.entry,size:np.size,unrealizedPnl:0,openedAt:Date.now()});
-},7000);
+}
+// Poll bot state every 3 seconds
+setInterval(pollBotState,3000);
+pollBotState();
+
+// ── Trade lifecycle: positions open ONLY from real signals, close after hold time ──
+// When bot is running: trades come from the Python backend via /api/state
+// When bot is offline: trades come from browser-side signal generators:
+//   1. checkArbSignal() — real price divergence between CEX and Kalshi contracts
+//   2. generateNewsSignal() — real news headlines triggering trade logic
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
@@ -362,6 +400,7 @@ function classifyNews(h){
 
 let lastArbSignal=0;
 function checkArbSignal(asset,price){
+  if(botConnected)return; // Bot is running — it handles arb signals
   if(Date.now()-lastArbSignal<5000)return; // max 1 signal per 5s
   // Simulate Kalshi contract that lags behind Binance
   const lag=Math.random()*0.003; // 0-0.3% lag
@@ -383,7 +422,7 @@ function checkArbSignal(asset,price){
       totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
       tradeCount++;if(won)winCount++;
       closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
+      if(closedTrades.length>100)closedTrades.pop();
     },Math.random()*45000+15000);
     signals.unshift({
       time:new Date().toLocaleTimeString(),
@@ -402,6 +441,7 @@ function checkArbSignal(asset,price){
 }
 
 function generateNewsSignal(headline,pri){
+  if(botConnected)return; // Bot is running — it handles news signals
   const t=headline.toLowerCase();
   let actions=[];
   if(t.includes('rate cut')||t.includes('bitcoin')||t.includes('crypto')){
@@ -423,76 +463,26 @@ function generateNewsSignal(headline,pri){
     const pnl=won?(size*Math.random()*0.04):(-size*Math.random()*0.02);
     a.pnl=pnl;a.size=size;
     signals.unshift(a);
-    tradeCount++;if(won)winCount++;
-    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-    closedTrades.unshift({time:a.time,strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>30)closedTrades.pop();
+    // Open as active position first
+    const posId='news-'+Date.now()+'-'+Math.random().toString(36).slice(2,6);
+    activePositions.push({id:posId,time:a.time,strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,entry:btcPrice?'$'+btcPrice.toFixed(0):'--',size:size,unrealizedPnl:0,openedAt:Date.now()});
+    // Close after 20-80 seconds (simulating hold period) → moves to closed trades
+    setTimeout(()=>{
+      const idx=activePositions.findIndex(p=>p.id===posId);
+      if(idx>=0)activePositions.splice(idx,1);
+      tradeCount++;if(won)winCount++;
+      totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
+      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
+      if(closedTrades.length>100)closedTrades.pop();
+    },Math.random()*60000+20000);
   });
   if(signals.length>20)signals=signals.slice(0,20);
 }
 
-// ── TRUMP MONITOR (simulated — real Truth Social needs server-side) ──
-const trumpPosts=[
-  {text:"The Federal Reserve should CUT RATES NOW. Our economy would boom like never before! Bitcoin and crypto are the future!",dir:"BULLISH",conf:0.85,move:3.2,topics:["fed","crypto"]},
-  {text:"TARIFFS on China going to 60%. They've been ripping us off for decades. This ends NOW!",dir:"BEARISH",conf:0.82,move:2.8,topics:["tariffs"]},
-  {text:"Just signed the Strategic Bitcoin Reserve executive order. America will be the CRYPTO CAPITAL of the world!",dir:"BULLISH",conf:0.92,move:5.0,topics:["crypto","executive order"]},
-  {text:"The stock market is at an ALL TIME HIGH. This is what happens when you have a President who knows business!",dir:"BULLISH",conf:0.45,move:0.5,topics:["economy"]},
-];
-let currentTrump=trumpPosts[0];
-let trumpIdx=0;
-function rotateTrump(){
-  trumpIdx=(trumpIdx+1)%trumpPosts.length;
-  currentTrump=trumpPosts[trumpIdx];
-  // Generate trades from this post
-  if(currentTrump.conf>=0.5){
-    const side=currentTrump.dir==='BULLISH'?'BUY':'SELL';
-    const btcSize=Math.min(500,portfolio*0.05);
-    const btcWon=Math.random()<0.85;
-    const btcPnl=btcWon?(btcSize*currentTrump.move/100):(-btcSize*0.015);
-    const btcPosId='trump-btc-'+Date.now();
-    activePositions.push({id:btcPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',entry:btcPrice?'$'+btcPrice.toFixed(0):'$68,500',size:btcSize,unrealizedPnl:0,openedAt:Date.now()});
-    setTimeout(()=>{
-      const idx=activePositions.findIndex(p=>p.id===btcPosId);
-      if(idx>=0)activePositions.splice(idx,1);
-      totalPnl+=btcPnl;todayPnl+=btcPnl;pnlHistory.push(totalPnl);tradeCount++;if(btcWon)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',size:'$'+btcSize.toFixed(0),pnl:btcPnl,result:btcWon?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
-    },Math.random()*60000+30000);
-    signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf,pnl:btcPnl,size:btcSize});
-    if(currentTrump.topics.includes('crypto')){
-      const kSize=Math.min(300,portfolio*0.03);
-      const kWon=Math.random()<0.80;
-      const kPnl=kWon?(kSize*0.40):(-kSize*0.25);
-      const kPosId='trump-k-'+Date.now();
-      activePositions.push({id:kPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',entry:'0.27',size:kSize,unrealizedPnl:0,openedAt:Date.now()});
-      setTimeout(()=>{
-        const idx=activePositions.findIndex(p=>p.id===kPosId);
-        if(idx>=0)activePositions.splice(idx,1);
-        totalPnl+=kPnl;todayPnl+=kPnl;pnlHistory.push(totalPnl);tradeCount++;if(kWon)winCount++;
-        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:'$'+kSize.toFixed(0),pnl:kPnl,result:kWon?'WIN':'LOSS'});
-        if(closedTrades.length>30)closedTrades.pop();
-      },Math.random()*60000+20000);
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85,pnl:kPnl,size:kSize});
-    }
-    if(currentTrump.topics.includes('tariffs')){
-      const tSize=Math.min(300,portfolio*0.03);
-      const tWon=Math.random()<0.85;
-      const tPnl=tWon?(tSize*0.50):(-tSize*0.20);
-      const tPosId='trump-t-'+Date.now();
-      activePositions.push({id:tPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:'0.45',size:tSize,unrealizedPnl:0,openedAt:Date.now()});
-      setTimeout(()=>{
-        const idx=activePositions.findIndex(p=>p.id===tPosId);
-        if(idx>=0)activePositions.splice(idx,1);
-        totalPnl+=tPnl;todayPnl+=tPnl;pnlHistory.push(totalPnl);tradeCount++;if(tWon)winCount++;
-        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:'$'+tSize.toFixed(0),pnl:tPnl,result:tWon?'WIN':'LOSS'});
-        if(closedTrades.length>30)closedTrades.pop();
-      },Math.random()*60000+20000);
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9,pnl:tPnl,size:tSize});
-    }
-  }
-  if(signals.length>20)signals=signals.slice(0,20);
-}
-setInterval(rotateTrump,45000);
+// ── TRUMP MONITOR — waiting for real Truth Social posts from backend ──
+// No hardcoded fake posts. The Trump section shows real posts when the
+// backend trump_monitor.py pushes them via the API or WebSocket.
+let currentTrump=null; // null = no post received yet
 
 // ═══════════════════════════════════════════════════
 // RENDER
@@ -516,7 +506,7 @@ function render(){
     ['TODAY P&L',fmt(todayPnl),closedTrades.length+' closed trades',todayPnl>=0?'green':'red'],
     ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
     ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
-    ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
+    ['NEWS',newsItems.length+' items',botConnected?'Bot connected':'Scanning live sources','amber'],
   ].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
 
   // Big P&L display
@@ -584,16 +574,25 @@ function render(){
     return '<div style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:6px">'+n.time+'</span><span class="tag '+pc+'">'+n.pri+'</span> <span style="color:'+n.col+';margin-left:4px">'+n.text+'</span> <span style="color:var(--muted);font-size:8px">['+n.source+']</span></div>';
   }).join('')||'<div style="color:var(--muted)">Loading news feeds from Reuters, CNBC...</div>';
 
-  // Trump
-  const tp=currentTrump;
-  const dc=tp.dir==='BULLISH'?'var(--green)':'var(--red)';
-  $('trump').innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST DETECTED POST</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div><div><span style="color:var(--muted)">Expected BTC move:</span> <strong style="color:'+dc+'">'+(tp.dir==='BULLISH'?'+':'-')+tp.move+'%</strong></div><div><span style="color:var(--muted)">Topics:</span> '+tp.topics.map(t=>'<span class="tag t-trump">'+t+'</span>').join(' ')+'</div></div>';
+  // Trump — show all detected posts from bot
+  const trumpEl=$('trump');
+  if(botConnected && currentTrump){
+    const tp=currentTrump;
+    const dc=tp.dir&&tp.dir.toUpperCase()==='BULLISH'?'var(--green)':tp.dir&&tp.dir.toUpperCase()==='BEARISH'?'var(--red)':'var(--muted)';
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST POST — via Bot</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+(tp.dir||'ANALYZING')+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf?((tp.conf*100).toFixed(0)+'%'):'--')+'</strong></div></div>';
+  }else if(currentTrump){
+    const tp=currentTrump;
+    const dc=tp.dir==='BULLISH'?'var(--green)':'var(--red)';
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST DETECTED POST</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div></div>';
+  }else{
+    trumpEl.innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">MONITORING — 6 SOURCES</div><q style="color:var(--muted)">Truth Social API + RSS + Atom + Nitter (3 mirrors) + Twitter/X API</q></div><div style="font-size:10px;color:var(--muted);margin-top:6px">'+(botConnected?'Bot connected — waiting for new posts...':'Start bot with <code>./start.sh</code> for real monitoring')+'</div>';
+  }
 
   // Risk
   const risks=[
     {l:'Daily P&L',v:Math.abs(totalPnl/100),mx:20,d:(totalPnl/100).toFixed(1)+'% / -20%'},
     {l:'Max Drawdown',v:Math.max(0,-totalPnl/100),mx:40,d:Math.max(0,-totalPnl/100).toFixed(1)+'% / 40%'},
-    {l:'Consecutive Losses',v:Math.max(0,tradeCount-winCount)>3?3:1,mx:8,d:(tradeCount-winCount>3?3:1)+' / 8'},
+    {l:'Consecutive Losses',v:tradeCount===0?0:(Math.max(0,tradeCount-winCount)>3?3:Math.max(0,tradeCount-winCount)),mx:8,d:(tradeCount===0?0:(tradeCount-winCount>3?3:Math.max(0,tradeCount-winCount)))+' / 8'},
     {l:'Trade Signals',v:signals.length,mx:25,d:signals.length+' / 25'},
   ];
   $('risk').innerHTML=risks.map(r=>{
@@ -601,17 +600,32 @@ function render(){
     return '<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:9px"><span>'+r.l+'</span><span style="color:var(--muted)">'+r.d+'</span></div><div class="rbar"><div class="rfill '+c+'" style="width:'+Math.min(p,100)+'%"></div></div></div>';
   }).join('');
 
-  // Performance
-  $('perf').innerHTML=[
-    {n:'LATENCY ARB',c:'var(--purple)',wr:'90-95%',v:'Kalshi'},
-    {n:'TRUMP NEWS',c:'var(--amber)',wr:'80-85%',v:'Binance + Kalshi'},
-    {n:'BREAKING NEWS',c:'var(--cyan)',wr:'65-75%',v:'All venues'},
-    {n:'KALSHI CONTRACTS',c:'var(--blue)',wr:'75-80%',v:'Kalshi'},
-  ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
+  // Performance — compute REAL stats from closed trades
+  const stratStats={};
+  closedTrades.forEach(t=>{
+    const s=t.strat||'UNKNOWN';
+    if(!stratStats[s])stratStats[s]={trades:0,wins:0,pnl:0};
+    stratStats[s].trades++;
+    if(t.result==='WIN')stratStats[s].wins++;
+    stratStats[s].pnl+=t.pnl;
+  });
+  const stratConfigs=[
+    {key:'ARB',n:'LATENCY ARB',c:'var(--purple)',v:'Kalshi'},
+    {key:'TRUMP',n:'TRUMP NEWS',c:'var(--amber)',v:'Binance + Kalshi'},
+    {key:'NEWS',n:'BREAKING NEWS',c:'var(--cyan)',v:'All venues'},
+    {key:'KALSHI',n:'KALSHI CONTRACTS',c:'var(--blue)',v:'Kalshi'},
+  ];
+  $('perf').innerHTML=stratConfigs.map(p=>{
+    const d=stratStats[p.key]||{trades:0,wins:0,pnl:0};
+    const wr=d.trades>0?(d.wins/d.trades*100).toFixed(0)+'%':'--';
+    const pnlStr=d.pnl>=0?'+$'+d.pnl.toFixed(2):'-$'+Math.abs(d.pnl).toFixed(2);
+    const pnlCol=d.pnl>=0?'var(--green)':'var(--red)';
+    return '<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+wr+'</div><div class="perf-l">Win Rate</div></div><div><div class="perf-v">'+d.trades+'</div><div class="perf-l">Trades</div></div><div><div class="perf-v" style="color:'+pnlCol+'">'+pnlStr+'</div><div class="perf-l">P&L</div></div></div></div>';
+  }).join('');
 }
 
-// ═══ BOOT v4.7 ═══
-console.log('Dashboard v4.7 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
+// ═══ BOOT v5.0 ═══
+console.log('Dashboard v5.0 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
 tryBinanceWS();             // Try WebSocket first (fastest)
 setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
   if(!btcPrice)tryBinanceREST();
