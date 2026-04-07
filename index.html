@@ -93,35 +93,59 @@ let btcHistory=[];
 let signals=[];
 let newsItems=[];
 let tradeCount=0,winCount=0,totalPnl=0;
+let wsConnected=false;
 
-// ── BINANCE WEBSOCKET — real-time BTC + ETH prices ──
+// ── FETCH PRICES IMMEDIATELY via REST (no waiting) ──
+async function fetchPricesNow(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
+    const d=await r.json();
+    d.forEach(t=>{
+      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice||parseFloat(t.price);btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);}
+      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice||parseFloat(t.price);ethPrice=parseFloat(t.price);}
+    });
+    render();
+  }catch(e){
+    // If Binance blocked, try CoinGecko
+    try{
+      const r2=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
+      const d2=await r2.json();
+      if(d2.bitcoin){btcPrev=btcPrice||d2.bitcoin.usd;btcPrice=d2.bitcoin.usd;btcHistory.push(btcPrice);}
+      if(d2.ethereum){ethPrev=ethPrice||d2.ethereum.usd;ethPrice=d2.ethereum.usd;}
+      render();
+    }catch(e2){}
+  }
+}
+
+// ── KEEP POLLING REST every 2 seconds as reliable baseline ──
+async function pollPrices(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
+    const d=await r.json();
+    d.forEach(t=>{
+      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice;btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',btcPrice);}
+      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice;ethPrice=parseFloat(t.price);checkArbSignal('ETH',ethPrice);}
+    });
+  }catch(e){}
+  if(!wsConnected)setTimeout(pollPrices,2000);
+}
+
+// ── UPGRADE TO WEBSOCKET if possible (faster updates) ──
 function connectBinance(){
   try{
     const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade/ethusdt@trade');
+    ws.onopen=()=>{wsConnected=true;};
     ws.onmessage=(e)=>{
       const d=JSON.parse(e.data);
       const p=parseFloat(d.p);
       if(d.s==='BTCUSDT'){btcPrev=btcPrice;btcPrice=p;btcHistory.push(p);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',p);}
       if(d.s==='ETHUSDT'){ethPrev=ethPrice;ethPrice=p;checkArbSignal('ETH',p);}
     };
-    ws.onclose=()=>setTimeout(connectBinance,3000);
-    ws.onerror=()=>ws.close();
+    ws.onclose=()=>{wsConnected=false;pollPrices();setTimeout(connectBinance,10000);};
+    ws.onerror=()=>{ws.close();};
   }catch(e){
-    // Fallback: fetch from REST API
-    fetchPricesFallback();
+    wsConnected=false;
   }
-}
-
-async function fetchPricesFallback(){
-  try{
-    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
-    const d=await r.json();
-    d.forEach(t=>{
-      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice;btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);}
-      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice;ethPrice=parseFloat(t.price);}
-    });
-  }catch(e){}
-  setTimeout(fetchPricesFallback,2000);
 }
 
 // ── LIVE NEWS via RSS-to-JSON ──
@@ -258,8 +282,8 @@ function render(){
   // Stats
   $('stats').innerHTML=[
     ['PORTFOLIO','$'+portfolio.toFixed(2),fmt(totalPnl)+' ('+(totalPnl/100).toFixed(1)+'%)',totalPnl>=0?'green':'red'],
-    ['BTC PRICE',btcPrice?'$'+btcPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Connecting...',btcPrice&&btcPrev?((btcPrice-btcPrev)>=0?'↑':'↓')+' $'+Math.abs(btcPrice-btcPrev).toFixed(2):'—',btcPrice>=btcPrev?'green':'red'],
-    ['ETH PRICE',ethPrice?'$'+ethPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Connecting...',ethPrice&&ethPrev?((ethPrice-ethPrev)>=0?'↑':'↓')+' $'+Math.abs(ethPrice-ethPrev).toFixed(2):'—',ethPrice>=ethPrev?'green':'red'],
+    ['BTC PRICE',btcPrice?'$'+btcPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...','$'+Math.abs(btcPrice-btcPrev).toFixed(2)+' '+(wsConnected?'(WS)':'(REST)'),btcPrice>=btcPrev?'green':'red'],
+    ['ETH PRICE',ethPrice?'$'+ethPrice.toLocaleString(undefined,{maximumFractionDigits:2}):'Loading...','$'+Math.abs(ethPrice-ethPrev).toFixed(2)+' '+(wsConnected?'(WS)':'(REST)'),ethPrice>=ethPrev?'green':'red'],
     ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
     ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
     ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
@@ -271,7 +295,8 @@ function render(){
     {a:'ETH',p:ethPrice,prev:ethPrev}
   ].map(c=>{
     const chg=c.p-c.prev;const col=chg>=0?'var(--green)':'var(--red)';
-    return '<div class="cex"><b>'+c.a+'</b><span class="p" style="color:'+col+'">$'+(c.p?c.p.toLocaleString(undefined,{minimumFractionDigits:2}):'—')+'</span><small>Change: '+(chg>=0?'+':'')+chg.toFixed(2)+' | Source: Binance WebSocket (real-time)</small></div>';
+    const src=wsConnected?'Binance WebSocket (streaming)':'Binance REST API (polling 2s)';
+    return '<div class="cex"><b>'+c.a+'</b><span class="p" style="color:'+col+'">$'+(c.p?c.p.toLocaleString(undefined,{minimumFractionDigits:2}):'Loading...')+'</span><small>Change: '+(chg>=0?'+':'')+chg.toFixed(2)+' | '+src+'</small></div>';
   }).join('');
 
   // Chart
@@ -325,11 +350,13 @@ function render(){
   ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
 }
 
-// ═══ BOOT ═══
-connectBinance();
-fetchNews();
+// ═══ BOOT — prices load instantly, no waiting ═══
+fetchPricesNow();           // REST API — loads in <500ms
+pollPrices();               // Keep polling as baseline
+connectBinance();           // Try WebSocket upgrade in background
+fetchNews();                // Load real news headlines
 setInterval(render,1000);
-setTimeout(render,500);
+render();
 </script>
 </body>
 </html>
