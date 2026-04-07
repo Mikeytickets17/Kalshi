@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Strategy Trading Bot</title>
+<style>
+:root{--bg:#060a13;--card:#0d1321;--card2:#111827;--border:#1a2235;--text:#e2e8f0;--muted:#546484;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;--cyan:#06b6d4;--lime:#84cc16}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono','JetBrains Mono','Fira Code',monospace;background:var(--bg);color:var(--text);overflow-x:hidden}
+.header{background:linear-gradient(135deg,#0d1321,#131b2e);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100;backdrop-filter:blur(20px)}
+.header h1{font-size:15px;font-weight:700;color:var(--cyan);letter-spacing:1px}
+.header-sub{font-size:11px;color:var(--muted);margin-left:12px}
+.badges{display:flex;gap:8px}
+.badge{padding:3px 10px;border-radius:12px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase}
+.b-paper{background:rgba(245,158,11,.12);color:var(--amber);border:1px solid rgba(245,158,11,.25)}
+.b-nj{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.25)}
+.b-live{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+.b-strats{background:rgba(168,85,247,.12);color:var(--purple);border:1px solid rgba(168,85,247,.25)}
+.pulse{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-right:5px}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 8px var(--green)}50%{opacity:.3;box-shadow:none}}
+.container{max-width:1500px;margin:0 auto;padding:16px}
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.stat-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.stat-value{font-size:24px;font-weight:700;margin:4px 0 2px}
+.stat-sub{font-size:10px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
+.full{grid-column:1/-1}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.panel-h{padding:10px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600}
+.panel-b{padding:12px 16px;font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{text-align:left;padding:6px 10px;color:var(--muted);font-weight:500;font-size:9px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:7px 10px;border-bottom:1px solid rgba(26,34,53,.5)}
+tr:hover td{background:rgba(59,130,246,.03)}
+.side{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700}
+.s-yes,.s-buy,.s-long{background:rgba(34,197,94,.12);color:var(--green)}
+.s-no,.s-sell,.s-short{background:rgba(239,68,68,.12);color:var(--red)}
+.strat{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700}
+.st-arb{background:rgba(168,85,247,.12);color:var(--purple)}
+.st-trump{background:rgba(245,158,11,.12);color:var(--amber)}
+.st-news{background:rgba(6,182,212,.12);color:var(--cyan)}
+.st-kalshi{background:rgba(59,130,246,.12);color:var(--blue)}
+.pnl-pos{color:var(--green)}.pnl-neg{color:var(--red)}
+.pri{display:inline-block;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:700;text-transform:uppercase}
+.pri-crit{background:rgba(239,68,68,.15);color:var(--red)}
+.pri-high{background:rgba(245,158,11,.15);color:var(--amber)}
+.chart{height:140px;display:flex;align-items:flex-end;gap:1px;padding:8px 0}
+.chart-bar{flex:1;border-radius:2px 2px 0 0;min-width:1px;transition:all .2s}
+.chart-bar:hover{filter:brightness(1.5)}
+.risk-bar-bg{height:5px;background:var(--border);border-radius:3px;margin-top:4px}
+.risk-fill{height:100%;border-radius:3px;transition:width .5s}
+.risk-ok{background:var(--green)}.risk-warn{background:var(--amber)}.risk-danger{background:var(--red)}
+.trump-box{background:linear-gradient(135deg,rgba(245,158,11,.06),rgba(245,158,11,.02));border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:12px;margin:8px 0}
+.trump-text{font-style:italic;color:var(--text);font-size:12px;line-height:1.5}
+.perf-card{background:rgba(20,28,45,.6);border-radius:8px;padding:12px;margin-bottom:8px}
+.perf-name{font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.perf-row{display:flex;gap:16px;align-items:baseline}
+.perf-big{font-size:20px;font-weight:700}
+.perf-sm{font-size:10px;color:var(--muted)}
+.venue-tag{font-size:8px;padding:1px 4px;border-radius:2px;background:rgba(100,100,140,.15);color:var(--muted)}
+.cex-row{display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid rgba(26,34,53,.4)}
+.cex-asset{font-weight:700;width:35px}
+.cex-price{font-size:14px;font-weight:700;width:110px}
+.cex-detail{font-size:10px;color:var(--muted)}
+.conf-bar{display:inline-block;width:40px;height:3px;background:var(--border);border-radius:2px;vertical-align:middle;margin-right:4px}
+.conf-fill{height:100%;border-radius:2px}
+.footer{text-align:center;padding:16px;font-size:9px;color:var(--muted);border-top:1px solid var(--border);margin-top:16px}
+@media(max-width:900px){.stats{grid-template-columns:repeat(3,1fr)}.g2,.g3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="header">
+<div style="display:flex;align-items:center">
+<h1>MULTI-STRATEGY TRADING BOT</h1>
+<span class="header-sub">Kalshi + Binance + Alpaca</span>
+</div>
+<div class="badges">
+<span class="badge b-paper">PAPER MODE</span>
+<span class="badge b-nj">NJ LEGAL</span>
+<span class="badge b-strats">4 STRATEGIES</span>
+<span style="font-size:10px;color:var(--muted)"><span class="pulse"></span><span id="uptime">0d 0h 0m</span></span>
+</div>
+</div>
+<div class="container">
+<div class="stats" id="stats-row"></div>
+<div class="g2">
+<div class="panel"><div class="panel-h"><span>CEX Price Feeds</span><span style="color:var(--muted);font-size:10px"><span class="pulse"></span>Live</span></div><div class="panel-b" id="cex-feeds"></div></div>
+<div class="panel"><div class="panel-h"><span>Equity Curve (7 Days)</span><span style="color:var(--muted);font-size:10px" id="peak-lbl"></span></div><div class="panel-b"><div class="chart" id="eq-chart"></div></div></div>
+</div>
+<div class="g2">
+<div class="panel"><div class="panel-h"><span>Active Positions</span><span style="color:var(--muted);font-size:10px" id="pos-count"></span></div><div style="overflow-x:auto"><table><thead><tr><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>P&L</th><th>Age</th></tr></thead><tbody id="pos-table"></tbody></table></div></div>
+<div class="panel"><div class="panel-h"><span>Live News Feed</span><span style="color:var(--green);font-size:10px"><span class="pulse"></span>14 sources</span></div><div class="panel-b" id="news-feed" style="max-height:300px;overflow-y:auto"></div></div>
+</div>
+<div class="panel full" style="margin-bottom:12px"><div class="panel-h"><span style="color:var(--amber)">Trump Truth Social Monitor</span><span style="color:var(--muted);font-size:10px"><span class="pulse"></span>Polling every 3s</span></div><div class="panel-b" id="trump-section"></div></div>
+<div class="panel full" style="margin-bottom:12px"><div class="panel-h"><span>Trade Log</span><span style="color:var(--muted);font-size:10px" id="trade-count"></span></div><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead><tbody id="trade-table"></tbody></table></div></div>
+<div class="g2">
+<div class="panel"><div class="panel-h"><span>Risk Management</span><span class="badge b-nj" style="font-size:8px">ACTIVE</span></div><div class="panel-b" id="risk-panel"></div></div>
+<div class="panel"><div class="panel-h"><span>Strategy Performance</span></div><div class="panel-b" id="perf-panel"></div></div>
+</div>
+</div>
+<div class="footer">Multi-Strategy Trading Bot — Kalshi + Binance + Alpaca — All US Legal from NJ — Auto-refreshes every 2s</div>
+<script>
+const D={
+portfolio:12847.33,initial:10000,pnl:2847.33,roi:28.47,peak:13410,
+wr:87.3,wins:142,losses:21,today_pnl:184.52,today_trades:12,
+active_pos:7,max_pos:25,dd:4.2,uptime:"2d 14h 37m",
+cex:[
+{asset:"BTC",price:69247.83,binance:69248.12,coinbase:69247.54,b_age:0.1,c_age:0.2,spread:0.001},
+{asset:"ETH",price:3482.41,binance:3482.59,coinbase:3482.23,b_age:0.1,c_age:0.3,spread:0.003}
+],
+equity:[10000,10045,10120,10089,10210,10340,10280,10410,10520,10490,10610,10730,10680,10820,10960,10910,11040,11180,11120,11290,11410,11350,11490,11630,11580,11720,11860,11800,11950,12080,12020,12170,12310,12250,12400,12530,12470,12620,12760,12700,12847],
+positions:[
+{strat:"ARB",side:"YES",asset:"BTC-UP-69200-15m",venue:"Kalshi",entry:"0.55",size:320,pnl:18.40,age:"4m"},
+{strat:"ARB",side:"NO",asset:"ETH-UP-3490-30m",venue:"Kalshi",entry:"0.62",size:280,pnl:12.80,age:"8m"},
+{strat:"TRUMP",side:"BUY",asset:"BTC SPOT",venue:"Binance",entry:"$68,500",size:540,pnl:42.18,age:"2m"},
+{strat:"TRUMP",side:"YES",asset:"BTC-RESERVE",venue:"Kalshi",entry:"0.27",size:288,pnl:98.40,age:"2m"},
+{strat:"TRUMP",side:"YES",asset:"TARIFF-CHINA-50",venue:"Kalshi",entry:"0.45",size:200,pnl:89.00,age:"18m"},
+{strat:"NEWS",side:"BUY",asset:"SPY",venue:"Alpaca",entry:"$521.30",size:400,pnl:-8.20,age:"12m"},
+{strat:"NEWS",side:"LONG",asset:"BTC 3x LEVERAGE",venue:"Binance",entry:"$69,100",size:600,pnl:31.50,age:"6m"}
+],
+news:[
+{time:"13:10:57",pri:"CRIT",text:"Trump: Strategic Bitcoin Reserve executive order signed",col:"amber"},
+{time:"13:10:42",pri:"HIGH",text:"Bitcoin surges past $75,000 on institutional buying wave",col:"green"},
+{time:"13:09:15",pri:"CRIT",text:"Federal Reserve holds rates, signals June cut — markets rally",col:"cyan"},
+{time:"13:08:30",pri:"CRIT",text:"US CPI at 2.1%, well below 2.5% consensus — inflation cooling",col:"green"},
+{time:"13:06:44",pri:"HIGH",text:"NVIDIA beats Q1 estimates, AI chip revenue up 200% YoY",col:"green"},
+{time:"13:05:12",pri:"HIGH",text:"China retaliates: 45% tariffs on US agricultural goods",col:"red"},
+{time:"13:03:30",pri:"CRIT",text:"Trump announces 60% tariffs on all Chinese imports — effective Monday",col:"red"},
+{time:"12:58:00",pri:"HIGH",text:"S&P 500 hits all-time high 5,450 on strong earnings season",col:"green"},
+{time:"12:55:00",pri:"HIGH",text:"Treasury yields spike to 5.2% on hot employment data",col:"amber"},
+{time:"12:50:00",pri:"HIGH",text:"Tesla announces 2-for-1 stock split, shares jump 12% after-hours",col:"green"}
+],
+trump:{
+text:'"I am hereby ordering the establishment of a Strategic Bitcoin Reserve. America will be the crypto superpower! The United States should NEVER sell its Bitcoin!"',
+time:"2 min ago",direction:"BULLISH",confidence:0.92,move:5.0,
+trades:[
+{side:"BUY",asset:"BTC",venue:"Binance",size:540},
+{side:"YES",asset:"BTC-RESERVE",venue:"Kalshi",size:288},
+{side:"YES",asset:"CRYPTO-REG",venue:"Kalshi",size:288},
+{side:"YES",asset:"TRUMP-EO",venue:"Kalshi",size:288}
+]
+},
+trades:[
+{time:"13:10:57",strat:"TRUMP",side:"BUY",asset:"BTC SPOT",venue:"Binance",size:"$540",pnl:"+$42.18",result:"WIN"},
+{time:"13:10:57",strat:"TRUMP",side:"YES",asset:"BTC-RESERVE",venue:"Kalshi",size:"$288",pnl:"+$98.40",result:"WIN"},
+{time:"13:10:57",strat:"TRUMP",side:"YES",asset:"TARIFF-CHINA",venue:"Kalshi",size:"$200",pnl:"+$89.00",result:"WIN"},
+{time:"13:10:42",strat:"NEWS",side:"BUY",asset:"BTC SPOT",venue:"Binance",size:"$350",pnl:"+$28.70",result:"WIN"},
+{time:"13:09:15",strat:"NEWS",side:"BUY",asset:"SPY",venue:"Alpaca",size:"$400",pnl:"+$12.80",result:"WIN"},
+{time:"13:09:15",strat:"NEWS",side:"LONG",asset:"BTC 3x",venue:"Binance",size:"$600",pnl:"+$94.20",result:"WIN"},
+{time:"13:08:30",strat:"NEWS",side:"BUY",asset:"QQQ",venue:"Alpaca",size:"$300",pnl:"+$8.40",result:"WIN"},
+{time:"13:06:44",strat:"NEWS",side:"BUY",asset:"NVDA",venue:"Alpaca",size:"$250",pnl:"+$20.00",result:"WIN"},
+{time:"13:05:12",strat:"NEWS",side:"SELL",asset:"SPY",venue:"Alpaca",size:"$400",pnl:"-$12.30",result:"LOSS"},
+{time:"13:03:30",strat:"TRUMP",side:"SELL",asset:"BTC SPOT",venue:"Binance",size:"$500",pnl:"+$87.50",result:"WIN"},
+{time:"13:00:15",strat:"ARB",side:"YES",asset:"BTC-UP-69200",venue:"Kalshi",size:"$320",pnl:"+$18.40",result:"WIN"},
+{time:"12:58:30",strat:"ARB",side:"NO",asset:"ETH-UP-3490",venue:"Kalshi",size:"$280",pnl:"+$12.80",result:"WIN"},
+{time:"12:55:00",strat:"ARB",side:"YES",asset:"BTC-UP-69150",venue:"Kalshi",size:"$300",pnl:"-$150.00",result:"LOSS"},
+{time:"12:52:10",strat:"ARB",side:"NO",asset:"ETH-UP-3500",venue:"Kalshi",size:"$260",pnl:"+$15.60",result:"WIN"},
+{time:"12:50:00",strat:"NEWS",side:"BUY",asset:"TSLA",venue:"Alpaca",size:"$200",pnl:"+$14.20",result:"WIN"}
+],
+risks:[
+{label:"Daily P&L",val:1.8,max:20,display:"+1.8% / -20% limit"},
+{label:"Max Drawdown",val:4.2,max:40,display:"4.2% / 40% kill"},
+{label:"Consecutive Losses",val:1,max:8,display:"1 / 8"},
+{label:"Open Positions",val:7,max:25,display:"7 / 25"},
+{label:"Crypto Exposure",val:32,max:50,display:"32% / 50% cap"},
+{label:"Stock Exposure",val:12,max:50,display:"12% / 50% cap"}
+],
+perf:[
+{name:"LATENCY ARB",color:"var(--purple)",wr:"92%",trades:48,pnl:847,venue:"Kalshi"},
+{name:"TRUMP NEWS",color:"var(--amber)",wr:"85%",trades:28,pnl:1240,venue:"Binance + Kalshi"},
+{name:"BREAKING NEWS",color:"var(--cyan)",wr:"72%",trades:67,pnl:560,venue:"All venues"},
+{name:"KALSHI CONTRACTS",color:"var(--blue)",wr:"78%",trades:20,pnl:200,venue:"Kalshi"}
+]
+};
+function $(id){return document.getElementById(id)}
+function fmt(n){return n>=0?'+$'+n.toFixed(2):'-$'+Math.abs(n).toFixed(2)}
+function render(){
+// Stats
+$('stats-row').innerHTML=[
+['PORTFOLIO','$'+D.portfolio.toLocaleString(undefined,{minimumFractionDigits:2}),fmt(D.pnl)+' ('+D.roi.toFixed(1)+'%)',D.pnl>=0?'green':'red'],
+['WIN RATE',D.wr+'%',D.wins+'W / '+D.losses+'L','blue'],
+['TODAY',fmt(D.today_pnl),D.today_trades+' trades',D.today_pnl>=0?'green':'red'],
+['POSITIONS',D.active_pos+' open','across 3 venues','cyan'],
+['DRAWDOWN',D.dd.toFixed(1)+'%','Peak: $'+D.peak.toLocaleString(),'green'],
+['UPTIME',D.uptime,'4 strategies','purple']
+].map(([l,v,s,c])=>`<div class="stat"><div class="stat-label">${l}</div><div class="stat-value" style="color:var(--${c})">${v}</div><div class="stat-sub" style="color:var(--muted)">${s}</div></div>`).join('');
+// CEX
+$('cex-feeds').innerHTML=D.cex.map(c=>`<div class="cex-row"><span class="cex-asset">${c.asset}</span><span class="cex-price" style="color:var(--green)">$${c.price.toLocaleString(undefined,{minimumFractionDigits:2})}</span><span class="cex-detail">Binance: $${c.binance.toLocaleString()} (${c.b_age}s) &nbsp;|&nbsp; Coinbase: $${c.coinbase.toLocaleString()} (${c.c_age}s) &nbsp;|&nbsp; Spread: ${c.spread}%</span></div>`).join('');
+// Equity
+let eq=D.equity,mn=Math.min(...eq),mx=Math.max(...eq),rng=mx-mn||1;
+$('eq-chart').innerHTML=eq.map(v=>{let h=Math.max(3,((v-mn)/rng)*130);let c=v>=D.initial?'var(--blue)':'var(--red)';return`<div class="chart-bar" style="height:${h}px;background:${c}" title="$${v.toFixed(0)}"></div>`}).join('');
+$('peak-lbl').textContent='Peak: $'+D.peak.toLocaleString();
+// Positions
+$('pos-count').textContent=D.positions.length+'/'+D.max_pos;
+$('pos-table').innerHTML=D.positions.map(p=>{let sc='st-'+p.strat.toLowerCase();let sd=p.side.toLowerCase();let sdc=['YES','BUY','LONG'].includes(p.side)?'s-buy':'s-sell';return`<tr><td><span class="strat ${sc}">${p.strat}</span></td><td><span class="side ${sdc}">${p.side}</span></td><td>${p.asset}</td><td><span class="venue-tag">${p.venue}</span></td><td>${p.entry}</td><td>$${p.size}</td><td class="${p.pnl>=0?'pnl-pos':'pnl-neg'}">${fmt(p.pnl)}</td><td style="color:var(--muted)">${p.age}</td></tr>`}).join('');
+// News
+$('news-feed').innerHTML=D.news.map(n=>{let pc=n.pri==='CRIT'?'pri-crit':'pri-high';let tc=n.col==='green'?'var(--green)':n.col==='red'?'var(--red)':n.col==='amber'?'var(--amber)':'var(--cyan)';return`<div style="padding:5px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:8px">${n.time}</span><span class="pri ${pc}">${n.pri}</span> <span style="color:${tc};margin-left:6px">${n.text}</span></div>`}).join('');
+// Trump
+let t=D.trump;
+let tTrades=t.trades.map(tr=>`<span class="side ${['YES','BUY'].includes(tr.side)?'s-buy':'s-sell'}">${tr.side}</span> ${tr.asset} $${tr.size} <span class="venue-tag">${tr.venue}</span>`).join(' &nbsp; ');
+$('trump-section').innerHTML=`<div class="trump-box"><div style="font-size:10px;color:var(--amber);margin-bottom:6px">LATEST POST (${t.time})</div><div class="trump-text">${t.text}</div></div><div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:8px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:var(--green)">${t.direction}</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>${(t.confidence*100).toFixed(0)}%</strong></div><div><span style="color:var(--muted)">Expected BTC move:</span> <strong style="color:var(--green)">+${t.move}%</strong></div></div><div style="margin-top:10px"><span style="color:var(--muted)">Trades executed:</span> <div style="margin-top:4px">${tTrades}</div><div style="margin-top:6px;color:var(--cyan);font-size:10px">Total: $${t.trades.reduce((a,b)=>a+b.size,0).toLocaleString()} deployed across ${t.trades.length} trades in 0.3 seconds</div></div>`;
+// Trade log
+$('trade-count').textContent=D.trades.length+' recent trades';
+$('trade-table').innerHTML=D.trades.map(t=>{let sc='st-'+t.strat.toLowerCase();let sdc=['YES','BUY','LONG'].includes(t.side)?'s-buy':'s-sell';let rc=t.result==='WIN'?'pnl-pos':'pnl-neg';return`<tr><td style="color:var(--muted)">${t.time}</td><td><span class="strat ${sc}">${t.strat}</span></td><td><span class="side ${sdc}">${t.side}</span></td><td>${t.asset}</td><td><span class="venue-tag">${t.venue}</span></td><td>${t.size}</td><td class="${t.pnl.startsWith('-')?'pnl-neg':'pnl-pos'}">${t.pnl}</td><td><span class="side ${t.result==='WIN'?'s-buy':'s-sell'}">${t.result}</span></td></tr>`}).join('');
+// Risk
+$('risk-panel').innerHTML=D.risks.map(r=>{let p=r.val/r.max*100;let c=p>80?'risk-danger':p>50?'risk-warn':'risk-ok';return`<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:10px"><span>${r.label}</span><span style="color:var(--muted)">${r.display}</span></div><div class="risk-bar-bg"><div class="risk-fill ${c}" style="width:${Math.min(p,100)}%"></div></div></div>`}).join('');
+// Performance
+$('perf-panel').innerHTML=D.perf.map(p=>`<div class="perf-card"><div class="perf-name" style="color:${p.color}">${p.name} <span class="venue-tag">${p.venue}</span></div><div class="perf-row"><div><div class="perf-big">${p.wr}</div><div class="perf-sm">Win Rate</div></div><div><div class="perf-big">${p.trades}</div><div class="perf-sm">Trades</div></div><div><div class="perf-big pnl-pos">${fmt(p.pnl)}</div><div class="perf-sm">P&L</div></div></div></div>`).join('');
+}
+render();
+// Simulate live updates
+setInterval(()=>{
+D.cex[0].price+=(Math.random()-.48)*15;D.cex[0].binance=D.cex[0].price+Math.random()*2-1;D.cex[0].coinbase=D.cex[0].price+Math.random()*2-1;
+D.cex[1].price+=(Math.random()-.48)*1.5;D.cex[1].binance=D.cex[1].price+Math.random()*.5-.25;D.cex[1].coinbase=D.cex[1].price+Math.random()*.5-.25;
+D.today_pnl+=(Math.random()-.45)*3;D.portfolio=D.initial+D.pnl+D.today_pnl;
+D.positions.forEach(p=>{p.pnl+=(Math.random()-.4)*2});
+render();
+},2000);
+</script>
+</body>
+</html>
