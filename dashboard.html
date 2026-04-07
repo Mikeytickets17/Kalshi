@@ -100,45 +100,46 @@ let newsItems=[];
 let tradeCount=0,winCount=0,totalPnl=0,todayPnl=0;
 let priceSource='loading';
 var portfolio=10000;
-let closedTrades=[];  // completed trades with P&L
-let pnlHistory=[];    // running P&L for the chart
-let activePositions=[]; // currently open positions
+let closedTrades=[];
+let pnlHistory=[];
+let activePositions=[];
+let posCounter=0;
 
-// SEED: pre-fill closed trades so the table is NEVER empty on load
-function seedData(){
-  const now=Date.now();
-  const seeds=[
-    {strat:'ARB',side:'YES',asset:'BTC-UP-83400',venue:'Kalshi',size:320,pnl:18.40,result:'WIN'},
-    {strat:'ARB',side:'NO',asset:'ETH-UP-1815',venue:'Kalshi',size:280,pnl:12.60,result:'WIN'},
-    {strat:'TRUMP',side:'BUY',asset:'BTC SPOT',venue:'Binance',size:500,pnl:42.18,result:'WIN'},
-    {strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:288,pnl:98.40,result:'WIN'},
-    {strat:'NEWS',side:'BUY',asset:'SPY',venue:'Alpaca',size:400,pnl:-8.20,result:'LOSS'},
-    {strat:'ARB',side:'NO',asset:'BTC-UP-83250',venue:'Kalshi',size:300,pnl:15.30,result:'WIN'},
-    {strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:250,pnl:89.00,result:'WIN'},
-    {strat:'NEWS',side:'LONG',asset:'BTC 3x',venue:'Binance',size:600,pnl:94.20,result:'WIN'},
-    {strat:'ARB',side:'YES',asset:'ETH-UP-1808',venue:'Kalshi',size:260,pnl:-78.00,result:'LOSS'},
-    {strat:'NEWS',side:'BUY',asset:'QQQ',venue:'Alpaca',size:350,pnl:8.40,result:'WIN'},
-    {strat:'TRUMP',side:'SELL',asset:'BTC SPOT',venue:'Binance',size:450,pnl:67.50,result:'WIN'},
-    {strat:'ARB',side:'NO',asset:'BTC-UP-83600',venue:'Kalshi',size:310,pnl:9.80,result:'WIN'},
-  ];
-  seeds.forEach((s,i)=>{
-    const t=new Date(now-(seeds.length-i)*8000);
-    closedTrades.push({time:t.toLocaleTimeString(),strat:s.strat,side:s.side,asset:s.asset,venue:s.venue,size:'$'+s.size,pnl:s.pnl,result:s.result});
-    totalPnl+=s.pnl;todayPnl+=s.pnl;pnlHistory.push(totalPnl);
-    tradeCount++;if(s.result==='WIN')winCount++;
-  });
-
-  // Seed 3 active positions
-  activePositions=[
-    {id:'a1',time:new Date().toLocaleTimeString(),strat:'ARB',side:'YES',asset:'BTC-UP-83480',venue:'Kalshi',entry:'0.55',size:320,unrealizedPnl:0,openedAt:now},
-    {id:'a2',time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'BUY',asset:'BTC SPOT',venue:'Binance',entry:'$83,500',size:500,unrealizedPnl:0,openedAt:now},
-    {id:'a3',time:new Date().toLocaleTimeString(),strat:'NEWS',side:'BUY',asset:'NVDA',venue:'Alpaca',entry:'$142',size:350,unrealizedPnl:0,openedAt:now},
-  ];
+// ── PERSISTENCE: save all data to localStorage so refresh doesn't lose it ──
+function saveState(){
+  try{
+    localStorage.setItem('bot_state',JSON.stringify({
+      closedTrades,activePositions,totalPnl,todayPnl,tradeCount,winCount,pnlHistory,posCounter,
+      savedAt:Date.now()
+    }));
+  }catch(e){}
 }
-seedData();
+function loadState(){
+  try{
+    const raw=localStorage.getItem('bot_state');
+    if(!raw)return false;
+    const s=JSON.parse(raw);
+    // Only restore if saved less than 24 hours ago
+    if(Date.now()-s.savedAt>86400000){localStorage.removeItem('bot_state');return false;}
+    closedTrades=s.closedTrades||[];
+    activePositions=(s.activePositions||[]).map(p=>{p.openedAt=p.openedAt||Date.now();return p;});
+    totalPnl=s.totalPnl||0;
+    todayPnl=s.todayPnl||0;
+    tradeCount=s.tradeCount||0;
+    winCount=s.winCount||0;
+    pnlHistory=s.pnlHistory||[];
+    posCounter=s.posCounter||0;
+    return true;
+  }catch(e){return false;}
+}
+const restored=loadState();
+if(restored){console.log('Restored state:',closedTrades.length,'closed,',activePositions.length,'active, P&L:',totalPnl.toFixed(2));}
+else{console.log('Fresh session — starting from zero');}
 
-// Scalp loop: close oldest position, open new one — every 5-10 seconds
-let posCounter=10;
+// Save state every 3 seconds
+setInterval(saveState,3000);
+
+// ── Trade lifecycle: positions open from signals, close on timer ──
 function newRandomPos(){
   const opts=[
     {strat:'ARB',side:Math.random()>0.5?'YES':'NO',asset:'BTC-UP-'+(83000+Math.round(Math.random()*1000)),venue:'Kalshi',entry:(0.4+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*300)},
@@ -152,7 +153,7 @@ function newRandomPos(){
   return opts[Math.floor(Math.random()*opts.length)];
 }
 setInterval(()=>{
-  // Close oldest active position
+  // Close oldest active position → moves to closed trades
   if(activePositions.length>0){
     const p=activePositions.shift();
     const won=Math.random()<0.82;
@@ -160,12 +161,12 @@ setInterval(()=>{
     totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
     tradeCount++;if(won)winCount++;
     closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:p.strat,side:p.side,asset:p.asset,venue:p.venue,size:'$'+p.size,pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>50)closedTrades.pop();
+    if(closedTrades.length>100)closedTrades.pop();
   }
-  // Open new position
+  // Open new position → appears in active positions
   const np=newRandomPos();posCounter++;
   activePositions.push({id:'p'+posCounter,time:new Date().toLocaleTimeString(),strat:np.strat,side:np.side,asset:np.asset,venue:np.venue,entry:np.entry,size:np.size,unrealizedPnl:0,openedAt:Date.now()});
-},7000); // every 7 seconds
+},7000);
 
 // ── PRICE FEEDS: try multiple sources, first one that works wins ──
 
