@@ -932,12 +932,48 @@ async def main() -> None:
             pass
 
 
+def _print_startup_status() -> None:
+    """Show what's configured and what's missing."""
+    print("=" * 60)
+    print("  KALSHI MULTI-STRATEGY TRADING BOT v5.0")
+    print("=" * 60)
+    print(f"  Mode:      {'PAPER (simulated)' if config.PAPER_MODE else 'LIVE (real money)'}")
+    print(f"  Balance:   ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
+    print(f"  Kalshi:    {'DEMO API' if config.KALSHI_USE_DEMO else 'PRODUCTION API'}")
+    print()
+
+    checks = [
+        ("Kalshi API", bool(config.KALSHI_API_KEY_ID), "Contracts + arb trading"),
+        ("Binance API", bool(config.BINANCE_API_KEY), "BTC/ETH spot trading"),
+        ("Alpaca API", bool(config.ALPACA_API_KEY), "US stock trading"),
+        ("Claude API", bool(config.ANTHROPIC_API_KEY), "AI sentiment analysis"),
+        ("Telegram", bool(config.TELEGRAM_BOT_TOKEN), "Trade notifications"),
+    ]
+
+    print("  API Keys:")
+    for name, configured, desc in checks:
+        status = "READY" if configured else "NOT SET (paper mode)"
+        icon = "+" if configured else "-"
+        print(f"    [{icon}] {name:12s} {status:30s} {desc}")
+
+    strategies = [
+        "1. LATENCY ARB:   CEX price vs Kalshi crypto contracts",
+        "2. TRUMP NEWS:    Truth Social → Claude → BTC + Kalshi",
+        "3. BREAKING NEWS:  Reuters/AP/Fed → stocks + BTC + Kalshi",
+        "4. KALSHI MATCH:   Any news → matching Kalshi contracts",
+    ]
+    print()
+    print("  Strategies:")
+    for s in strategies:
+        print(f"    {s}")
+
+    print()
+    print("  Dashboard: Start with 'python dashboard.py' → http://localhost:5050")
+    print("  Or use:    ./start.sh (starts both)")
+    print("=" * 60)
+    print()
+
+
 if __name__ == "__main__":
-    print("Starting Kalshi Arb + Trump News Trading Bot...")
-    print(f"Mode: {'PAPER' if config.PAPER_MODE else 'LIVE'}")
-    print(f"Strategy 1: CEX price vs Kalshi crypto contracts")
-    print(f"Strategy 2: Trump Truth Social → Claude → Binance BTC")
-    print(f"Edge threshold: {config.EDGE_THRESHOLD_PCT*100:.1f}%")
-    print(f"Kalshi: {'DEMO' if config.KALSHI_USE_DEMO else 'PRODUCTION'}")
-    print(f"Paper balance: ${config.PAPER_INITIAL_BALANCE_USDC:,.2f}")
+    _print_startup_status()
     asyncio.run(main())
