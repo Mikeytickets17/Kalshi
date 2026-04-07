@@ -67,7 +67,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div><div id="pnl-value" style="font-size:20px;font-weight:700">$0.00</div></div>
 <div class="badges">
 <span class="badge b1" id="conn-badge">STANDALONE</span>
-<span class="badge b2">4 STRATEGIES</span>
+<span class="badge b2">5 STRATEGIES</span>
 <span style="font-size:9px;color:var(--muted)"><span class="pulse"></span><span id="clock">--:--:--</span></span>
 </div>
 </div>
@@ -79,6 +79,10 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>Closed Positions</span><div style="display:flex;gap:16px;align-items:center"><span style="font-size:9px;color:var(--muted)" id="closed-count">0 trades</span><span style="font-size:13px;font-weight:700" id="closed-pnl-total">$0.00</span></div></div><div style="overflow-x:auto;max-height:320px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Running Total</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
 </div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
+<div class="row r2">
+<div class="card"><div class="card-h"><span style="color:var(--purple)">Whale Tracker — Smart Money Flow</span><span class="live-dot"><span class="pulse"></span><span id="whale-count">0 signals</span></span></div><div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Market</th><th>Type</th><th>Side</th><th>Magnitude</th><th>Price</th><th>Volume</th><th>Confidence</th></tr></thead><tbody id="whale-table"></tbody></table></div></div>
+<div class="card"><div class="card-h"><span style="color:var(--purple)">Whale Copy Trades</span><span style="font-size:9px;color:var(--muted)" id="whale-copies-count">0 copied</span></div><div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Signal</th><th>Confidence</th><th>Status</th></tr></thead><tbody id="whale-copies-table"></tbody></table></div></div>
+</div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
 <div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Social Media Monitor</span><span class="live-dot"><span class="pulse"></span>8 sources | 3s polling</span></div><div class="card-b" id="trump"></div></div>
 <div class="row r2">
@@ -186,6 +190,9 @@ async function pollBotState(){
         });
         if(newsItems.length>30)newsItems.length=30;
       }
+      // Update whale tracker from bot
+      if(s.whale_signals)window._whaleSignals=s.whale_signals;
+      if(s.whale_copies)window._whaleCopies=s.whale_copies;
       console.log('Bot state synced:',s.total_trades,'trades,',s.positions?.length||0,'active');
       const cb=document.getElementById('conn-badge');
       if(cb){cb.textContent='BOT CONNECTED';cb.style.background='rgba(34,197,94,.1)';cb.style.color='var(--green)';cb.style.borderColor='rgba(34,197,94,.25)';}
@@ -568,6 +575,25 @@ function render(){
     return '<tr><td style="color:var(--muted)">'+p.time+'</td><td><span class="tag '+sc+'">'+p.strat+'</span></td><td><span class="tag '+sd+'">'+p.side+'</span></td><td>'+p.asset+'</td><td style="color:var(--muted)">'+p.venue+'</td><td>'+p.entry+'</td><td>$'+p.size.toFixed(0)+'</td><td style="color:'+upnlCol+';font-weight:700">'+upnlStr+'</td><td style="color:var(--muted)">'+ageStr+'</td></tr>';
   }).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No open positions</td></tr>';
 
+  // Whale Tracker
+  const ws=window._whaleSignals||[];
+  $('whale-count').textContent=ws.length+' signals';
+  $('whale-table').innerHTML=ws.slice(0,15).map(w=>{
+    const t=new Date((w.time||Date.now())*1000).toLocaleTimeString();
+    const sc=w.type==='volume_spike'?'t-arb':w.type==='price_jump'?'t-crit':'t-high';
+    const sd=w.direction==='YES'?'t-buy':'t-sell';
+    return '<tr><td style="color:var(--muted)">'+t+'</td><td style="max-width:150px">'+((w.title||w.ticker||'--').substring(0,40))+'</td><td><span class="tag '+sc+'">'+(w.type||'--').replace('_',' ')+'</span></td><td><span class="tag '+sd+'">'+(w.direction||'--')+'</span></td><td style="font-weight:700">'+(w.magnitude||0).toFixed(1)+'x</td><td>'+(w.price||0).toFixed(2)+'</td><td>'+(w.volume||0).toLocaleString()+'</td><td style="color:var(--cyan)">'+(w.confidence*100||0).toFixed(0)+'%</td></tr>';
+  }).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">Scanning Kalshi markets for whale activity...</td></tr>';
+
+  const wc=window._whaleCopies||[];
+  $('whale-copies-count').textContent=wc.length+' copied';
+  $('whale-copies-table').innerHTML=wc.slice(0,15).map(c=>{
+    const t=new Date((c.copied_at||Date.now())*1000).toLocaleTimeString();
+    const sd=c.direction==='YES'?'t-buy':'t-sell';
+    const stBg=c.status==='OPEN'?'t-buy':'t-sell';
+    return '<tr><td style="color:var(--muted)">'+t+'</td><td>'+(c.ticker||'--').substring(0,30)+'</td><td><span class="tag '+sd+'">'+(c.direction||'--')+'</span></td><td>$'+(c.size_usd||0).toFixed(0)+'</td><td>'+(c.entry_price||0).toFixed(2)+'</td><td style="font-size:8px">'+(c.signal_type||'--').replace('_',' ')+'</td><td>'+(c.whale_confidence*100||0).toFixed(0)+'%</td><td><span class="tag '+stBg+'">'+(c.status||'--')+'</span></td></tr>';
+  }).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">No whale trades copied yet</td></tr>';
+
   // News
   $('news').innerHTML=newsItems.map(n=>{
     const pc=n.pri==='CRIT'?'t-crit':n.pri==='HIGH'?'t-high':'t-news';
@@ -614,6 +640,7 @@ function render(){
     {key:'TRUMP',n:'TRUMP NEWS',c:'var(--amber)',v:'Binance + Kalshi'},
     {key:'NEWS',n:'BREAKING NEWS',c:'var(--cyan)',v:'All venues'},
     {key:'KALSHI',n:'KALSHI CONTRACTS',c:'var(--blue)',v:'Kalshi'},
+    {key:'WHALE',n:'WHALE COPY',c:'var(--purple)',v:'Kalshi'},
   ];
   $('perf').innerHTML=stratConfigs.map(p=>{
     const d=stratStats[p.key]||{trades:0,wins:0,pnl:0};
