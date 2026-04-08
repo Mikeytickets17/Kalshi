@@ -1085,8 +1085,14 @@ async def main() -> None:
         logger.info("Received shutdown signal")
         shutdown_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+    # add_signal_handler works on Linux/Mac but NOT on Windows
+    import sys
+    if sys.platform != "win32":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+    else:
+        # Windows: use Ctrl+C the normal way
+        logger.info("Windows detected — use Ctrl+C to stop")
 
     bot_task = asyncio.create_task(bot.run())
     shutdown_task = asyncio.create_task(shutdown_event.wait())
