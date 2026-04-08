@@ -127,7 +127,12 @@ def _empty_state() -> dict:
 
 @app.route("/")
 def index():
-    return render_template("dashboard.html")
+    # Serve the main dashboard.html directly (not the templates/ copy)
+    # This ensures localhost:5050 always shows the latest v5.1 dashboard
+    import os
+    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    with open(dashboard_path, "r") as f:
+        return f.read()
 
 
 @app.route("/api/state")
