@@ -187,8 +187,41 @@ class LatencyArbBot:
         """Periodically flush shared state to disk for the dashboard."""
         while self._running:
             try:
+                # Update unrealized P&L for all active positions
+                for market_id, pos in self._active_positions.items():
+                    cex = self._price_feed.get_price(pos.source_wallet) if hasattr(pos, 'source_wallet') else None
+                    if cex and cex.consensus_price > 0 and pos.avg_price > 0:
+                        if pos.side.value == "YES":
+                            upnl = (cex.consensus_price - pos.avg_price) * pos.size
+                        else:
+                            upnl = (pos.avg_price - cex.consensus_price) * pos.size
+                        shared_state.update_position_pnl(market_id, upnl)
+
+                # Update unrealized P&L for Trump positions
+                for tp in self._trump_positions:
+                    tid = tp.get("trade_id", "")
+                    if tid and tp.get("entry_price", 0) > 0:
+                        cex = self._price_feed.get_price(tp.get("asset", "BTC"))
+                        if cex and cex.consensus_price > 0:
+                            if tp["side"] in ("BUY", "LONG", "YES"):
+                                upnl = (cex.consensus_price - tp["entry_price"]) / tp["entry_price"] * tp["size_usd"]
+                            else:
+                                upnl = (tp["entry_price"] - cex.consensus_price) / tp["entry_price"] * tp["size_usd"]
+                            shared_state.update_position_pnl(tid, upnl)
+
+                # Update unrealized P&L for news positions
+                for np in self._news_positions:
+                    tid = np.get("trade_id", "")
+                    if tid and np.get("entry_price", 0) > 0:
+                        cex = self._price_feed.get_price(np.get("asset", "BTC"))
+                        if cex and cex.consensus_price > 0:
+                            if np["side"] in ("BUY", "LONG", "YES"):
+                                upnl = (cex.consensus_price - np["entry_price"]) / np["entry_price"] * np["size_usd"]
+                            else:
+                                upnl = (np["entry_price"] - cex.consensus_price) / np["entry_price"] * np["size_usd"]
+                            shared_state.update_position_pnl(tid, upnl)
+
                 shared_state.periodic_flush()
-                # Also push risk state to shared_state
                 risk_summary = self._risk_manager.get_summary()
                 shared_state.update_risk(risk_summary)
             except Exception:
