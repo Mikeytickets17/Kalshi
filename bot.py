@@ -837,9 +837,18 @@ class LatencyArbBot:
                 headline_lower = news.headline.lower()
                 if news.priority == "critical":
                     fast_news_side = None
-                    if any(kw in headline_lower for kw in ["rate cut", "cuts rate", "fed cut", "ceasefire", "peace deal", "etf approved", "bitcoin reserve"]):
+                    # PCE / inflation data — direction depends on above/below expectations
+                    if any(kw in headline_lower for kw in ["pce below", "pce comes in low", "pce cool", "pce drop", "pce fell", "pce decline", "inflation cool", "inflation ease", "inflation drop", "inflation below"]):
+                        fast_news_side = "BUY"  # low inflation = rate cuts = bullish
+                    elif any(kw in headline_lower for kw in ["pce above", "pce hot", "pce surge", "pce rise", "pce higher", "inflation hot", "inflation surge", "inflation rise", "inflation above", "inflation jump"]):
+                        fast_news_side = "SELL"  # high inflation = no rate cuts = bearish
+
+                    # General bullish signals
+                    elif any(kw in headline_lower for kw in ["rate cut", "cuts rate", "fed cut", "ceasefire", "peace deal", "etf approved", "bitcoin reserve", "jobs beat", "gdp beat", "gdp growth"]):
                         fast_news_side = "BUY"
-                    elif any(kw in headline_lower for kw in ["tariff", "trade war", "sanctions", "military strike", "invasion", "war ", "nuclear"]):
+
+                    # General bearish signals
+                    elif any(kw in headline_lower for kw in ["tariff", "trade war", "sanctions", "military strike", "invasion", "war ", "nuclear", "jobs miss", "recession", "gdp negative"]):
                         fast_news_side = "SELL"
 
                     if fast_news_side and self._available_balance > config.MIN_TRADE_SIZE_USDC:

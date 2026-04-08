@@ -311,7 +311,9 @@ class NewsFeed:
             "fomc", "interest rate", "fed cut", "fed hike",
             # Economic data
             " cpi ", "cpi report", "cpi comes", "cpi data",
-            "inflation data", "inflation rate",
+            " pce ", "pce data", "pce report", "pce index", "pce price",
+            "personal consumption", "core pce",
+            "inflation data", "inflation rate", "inflation report",
             "jobs report", "nonfarm payroll", "nonfarm payrolls",
             "gdp growth", "gdp report", "recession",
             "debt ceiling", "government shutdown",
