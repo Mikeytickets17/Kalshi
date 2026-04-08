@@ -36,6 +36,7 @@ from signal_evaluator import EvaluationResult, SignalEvaluator
 from stock_trader import StockTrader
 from whale_tracker import WhaleTracker, WhaleSignal
 from edge_detector import EdgeDetector, MarketEdge
+from regime_detector import RegimeDetector
 
 # --- Logging Setup ---
 
@@ -104,6 +105,9 @@ class LatencyArbBot:
 
         # Components — Edge Detector (find market loopholes)
         self._edge_detector = EdgeDetector(self._kalshi)
+
+        # Components — Regime Detector (pick ONE direction, stop fighting yourself)
+        self._regime = RegimeDetector(window_hours=4.0)
 
         # Initialize shared state — recover from previous session if possible
         prev_state = shared_state.load_from_disk()
@@ -545,6 +549,16 @@ class LatencyArbBot:
                     fast_confidence = 0.75
                     logger.info("FAST PATH: BEARISH keywords detected — trading in <100ms")
 
+                # Feed Trump post into regime detector
+                self._regime.process_headline(post.text, post.source)
+
+                # Check regime before trading
+                if fast_direction:
+                    allowed, regime_reason = self._regime.should_take_trade(fast_direction)
+                    if not allowed:
+                        logger.info("REGIME BLOCKED TRUMP FAST: %s — %s", fast_direction, regime_reason)
+                        fast_direction = None
+
                 # Execute fast path trade immediately while AI analyzes
                 if fast_direction and self._available_balance > config.MIN_TRADE_SIZE_USDC:
                     fast_size = min(self._portfolio_value * 0.04, config.TRUMP_MAX_TRADE_SIZE_USDC)
@@ -833,6 +847,12 @@ class LatencyArbBot:
                     news.priority.upper(), news.headline[:80], news.source,
                 )
 
+                # Feed headline into regime detector
+                self._regime.process_headline(news.headline, news.source)
+                logger.info("REGIME: %s (conf=%.2f) — %s",
+                            self._regime.direction, self._regime.regime.confidence,
+                            self._regime.regime.reason[:60])
+
                 # FAST PATH for critical news — trade BEFORE AI analysis
                 headline_lower = news.headline.lower()
                 if news.priority == "critical":
@@ -850,6 +870,13 @@ class LatencyArbBot:
                     # General bearish signals
                     elif any(kw in headline_lower for kw in ["tariff", "trade war", "sanctions", "military strike", "invasion", "war ", "nuclear", "jobs miss", "recession", "gdp negative"]):
                         fast_news_side = "SELL"
+
+                    # Check regime before fast news trade
+                    if fast_news_side:
+                        allowed, regime_reason = self._regime.should_take_trade(fast_news_side)
+                        if not allowed:
+                            logger.info("REGIME BLOCKED NEWS FAST: %s — %s", fast_news_side, regime_reason)
+                            fast_news_side = None
 
                     if fast_news_side and self._available_balance > config.MIN_TRADE_SIZE_USDC:
                         fast_size = min(self._portfolio_value * 0.04, 500)
@@ -889,6 +916,12 @@ class LatencyArbBot:
                 # Execute each action
                 for action in actions:
                     if action.confidence < 0.50:
+                        continue
+
+                    # REGIME CHECK — don't trade against the macro direction
+                    allowed, regime_reason = self._regime.should_take_trade(action.side)
+                    if not allowed:
+                        logger.info("REGIME BLOCKED: %s %s — %s", action.side, action.asset, regime_reason)
                         continue
 
                     # In live mode: check real order book before trading
