@@ -64,10 +64,33 @@
 - News items weren't persisted to disk in shared_state
 - record_news() missing _persist() call
 
+## DASHBOARD ISSUES FIXED
+- Flask template had wrong field names (ticker/type vs strategy/asset) → rewrote template
+- Dashboard flickered between real data and zeros → bot_state.json was being read during write
+- Fix: dashboard.py now caches last good state, never returns zeros if bot is running
+- localhost:5050 serves from templates/dashboard.html (new version with correct field mapping)
+- file:///C:/Users/mikey/Kalshi/dashboard.html is the v5.1 dashboard (works standalone)
+- The file:// dashboard connects to localhost:5050/api/state for bot data
+- CORS headers added via @app.after_request so file:// can reach localhost
+- If bot not running, file:// dashboard shows news but no trades (correct behavior)
+
+## KALSHI ACCOUNT SETUP (NEXT STEP)
+- Go to https://kalshi.com/sign-up
+- Create account, verify identity
+- Go to Settings > API
+- Create API key → get Key ID + download .pem private key file
+- Save .pem file to C:\Users\mikey\Kalshi\
+- Edit .env file and add:
+  KALSHI_API_KEY_ID=your-key-id
+  KALSHI_PRIVATE_KEY_PATH=./your-key-file.pem
+  KALSHI_USE_DEMO=true (start with demo, switch to false for real money)
+  PAPER_MODE=false (when ready for real trading)
+
 ## FILES ON DISK
 - RUN.bat — ONE double-click starts everything (auto-updates, starts bot+dashboard, opens browser)
 - PROJECT_BRIEF.md — full project description for AI handoff
 - OVERNIGHT_REPORT.md — real-time trading report from overnight monitoring
+- overnight_dashboard.html — visual report of overnight trades
 - CLAUDE.md — this file, persistent memory across sessions
 - bot_state.json — live bot state (portfolio, trades, positions)
 - research_log.json — Brave Search research findings
