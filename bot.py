@@ -431,28 +431,28 @@ class LatencyArbBot:
                 await asyncio.sleep(1)
 
     def _check_exit(self, position: Position) -> tuple[bool, str]:
-        # Paper mode: simulate resolution after random 5-15 min
-        if self._paper_mode:
-            age = time.time() - position.entry_time
-            if age > random.uniform(1800, 5400):  # 30-90 minutes — let positions breathe
-                # Simulate win/loss: lower entry price = more edge = higher win rate
-                # Buying YES at 0.40 has more upside than at 0.90
-                edge_factor = 1.0 - position.avg_price  # higher when entry is lower
-                win_prob = min(0.60 + edge_factor * 0.35, 0.95)
-                if random.random() < win_prob:
-                    # Won: contract resolves at $1.00
-                    if position.side == Side.YES:
-                        position.current_price = 0.99
-                    else:
-                        position.current_price = 0.99
-                else:
-                    # Lost: contract resolves at $0
-                    if position.side == Side.YES:
-                        position.current_price = 0.01
-                    else:
-                        position.current_price = 0.01
-                return True, "Contract resolved"
-            return False, ""
+        age = time.time() - position.entry_time
+
+        # Calculate current P&L
+        if position.side == Side.YES:
+            pnl = (position.current_price - position.avg_price) * position.size
+        else:
+            pnl = (position.avg_price - position.current_price) * position.size
+
+        # Rule 1: TAKE PROFIT — exit when profit exceeds $50
+        if pnl >= 50:
+            return True, f"Take profit: ${pnl:.2f}"
+
+        # Rule 2: STOP LOSS — exit when loss exceeds $15
+        if pnl <= -15:
+            return True, f"Stop loss: ${pnl:.2f}"
+
+        # Rule 3: TIME EXIT — close after 60 minutes regardless
+        if age > 3600:
+            return True, f"Time exit: held {age/60:.0f}min, P&L ${pnl:.2f}"
+
+        # Rule 4: Otherwise HOLD — let the position breathe
+        return False, ""
 
         # Live: check risk manager conditions
         should_exit, reason = self._risk_manager.check_exit_conditions(
