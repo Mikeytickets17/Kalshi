@@ -387,7 +387,7 @@ class OrderBookReader:
     # --- Paper Mode ---
 
     async def _run_paper_mode(self) -> None:
-        """Simulate order book data in paper mode."""
+        """Simulate order book data in paper mode with realistic reactions."""
         import random
         logger.info("[PAPER] OrderBookReader running in simulation mode")
 
@@ -395,7 +395,8 @@ class OrderBookReader:
             for asset in config.TARGET_ASSETS:
                 symbol = f"{asset}USDT"
                 base = {"BTC": 83500, "ETH": 1800}.get(asset, 50000)
-                mid = base + random.gauss(0, base * 0.0002)
+                # Larger price movements so trades actually trigger
+                mid = base + random.gauss(0, base * 0.002)
 
                 self._books[symbol] = OrderBookSnapshot(
                     asset=asset, timestamp=time.time(),
@@ -408,18 +409,23 @@ class OrderBookReader:
                     imbalance=round(random.gauss(0, 0.3), 4),
                 )
 
-                # Simulate trade flow
-                for _ in range(random.randint(5, 20)):
+                # Simulate trade flow with realistic volumes and directional bias
+                direction_bias = random.choice([-1, 1])  # simulate trending
+                for _ in range(random.randint(10, 30)):
+                    side = "buy" if random.random() < (0.6 if direction_bias > 0 else 0.4) else "sell"
+                    usd = random.uniform(100, 80000)  # up to $80k trades
                     self._trade_flow[symbol].append({
-                        "price": mid + random.gauss(0, mid * 0.0001),
-                        "qty": random.uniform(0.001, 0.5),
-                        "usd": random.uniform(50, 30000),
-                        "side": random.choice(["buy", "sell"]),
-                        "ts": time.time() - random.uniform(0, 5),
+                        "price": mid + random.gauss(0, mid * 0.001) * direction_bias,
+                        "qty": random.uniform(0.001, 1.0),
+                        "usd": usd,
+                        "side": side,
+                        "ts": time.time() - random.uniform(0, 3),
                     })
+                    # Price moves in the direction of flow
+                    price_drift = mid * 0.0015 * direction_bias * random.random()
                     self._price_snapshots[symbol].append({
-                        "price": mid + random.gauss(0, mid * 0.0001),
-                        "ts": time.time() - random.uniform(0, 5),
+                        "price": mid + price_drift,
+                        "ts": time.time() - random.uniform(0, 3),
                     })
 
             await asyncio.sleep(0.5)

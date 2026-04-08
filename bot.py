@@ -35,8 +35,15 @@ from risk_manager import RiskManager
 from signal_evaluator import EvaluationResult, SignalEvaluator
 from stock_trader import StockTrader
 from whale_tracker import WhaleTracker, WhaleSignal
+from edge_detector import EdgeDetector, MarketEdge
 
 # --- Logging Setup ---
+
+# Fix Windows encoding crash: force UTF-8 on console output
+import io
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
@@ -44,7 +51,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(config.LOG_FILE, mode="a"),
+        logging.FileHandler(config.LOG_FILE, mode="a", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("bot")
@@ -94,6 +101,9 @@ class LatencyArbBot:
 
         # Components — Whale Tracker (copy top Kalshi traders)
         self._whale_tracker = WhaleTracker(self._kalshi)
+
+        # Components — Edge Detector (find market loopholes)
+        self._edge_detector = EdgeDetector(self._kalshi)
 
         # Initialize shared state — recover from previous session if possible
         prev_state = shared_state.load_from_disk()
@@ -152,6 +162,8 @@ class LatencyArbBot:
             # Strategy 5: Whale Tracker (copy smart money on Kalshi)
             asyncio.create_task(self._whale_tracker.start(), name="whale_tracker"),
             asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
+            # Strategy 6: Edge Detector (market loopholes)
+            asyncio.create_task(self._edge_scanner(), name="edge_scanner"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
             # Daily Telegram summary
@@ -1073,6 +1085,72 @@ class LatencyArbBot:
 
             except Exception as exc:
                 logger.error("Whale copy error: %s", exc, exc_info=True)
+
+
+    # --- Strategy 6: Edge Detection (Market Loopholes) ---
+
+    async def _edge_scanner(self) -> None:
+        """Periodically scan for market inefficiencies and trade them."""
+        logger.info("Edge scanner started — hunting for market loopholes every 60s")
+        while self._running:
+            try:
+                edges = await self._edge_detector.scan_all()
+                for edge in edges:
+                    if edge.confidence < 0.60:
+                        continue
+
+                    logger.info(
+                        "EDGE FOUND: [%s] %s — %s side, %.1f%% expected profit (conf=%.2f)",
+                        edge.edge_type, edge.ticker, edge.side,
+                        edge.expected_profit_pct, edge.confidence,
+                    )
+
+                    # Record to shared state
+                    shared_state.record_signal(
+                        strategy="EDGE", side=edge.side, asset=edge.ticker,
+                        venue="Kalshi", confidence=edge.confidence,
+                        reason=f"[{edge.edge_type}] {edge.description[:80]}",
+                        action="DETECTED",
+                    )
+
+                    # Trade mispricing edges automatically (guaranteed profit)
+                    if edge.edge_type == "mispricing" and edge.expected_profit_pct >= 2.0:
+                        size = min(
+                            self._portfolio_value * edge.size_suggestion_pct,
+                            config.MAX_TRADE_SIZE_USDC,
+                        )
+                        if size >= config.MIN_TRADE_SIZE_USDC and size <= self._available_balance:
+                            order = self._kalshi.place_order(
+                                ticker=edge.ticker,
+                                side="YES" if edge.side != "SELL_BOTH" else "YES",
+                                size_usd=size,
+                                price=edge.current_price,
+                            )
+                            if order.success:
+                                trade_id = f"edge-{int(time.time()*1000)}"
+                                self._trade_count += 1
+                                self._available_balance -= size
+                                shared_state.record_trade_opened(
+                                    trade_id=trade_id, strategy="EDGE",
+                                    side=edge.side, asset=edge.ticker,
+                                    venue="Kalshi", entry_price=order.filled_price,
+                                    size_usd=size, confidence=edge.confidence,
+                                    reason=f"[{edge.edge_type}] {edge.description[:60]}",
+                                )
+                                logger.info(
+                                    "EDGE TRADE: %s %s $%.2f — %s (%.1f%% expected profit)",
+                                    edge.side, edge.ticker, size,
+                                    edge.edge_type, edge.expected_profit_pct,
+                                )
+
+                if edges:
+                    logger.info("Edge scan: found %d edges (top: %.1f%% profit)",
+                                len(edges), edges[0].expected_profit_pct if edges else 0)
+
+            except Exception as exc:
+                logger.error("Edge scanner error: %s", exc, exc_info=True)
+
+            await asyncio.sleep(60)  # Scan every 60 seconds
 
 
 async def main() -> None:

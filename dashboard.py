@@ -125,6 +125,14 @@ def _empty_state() -> dict:
     }
 
 
+@app.after_request
+def add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+
 @app.route("/")
 def index():
     # Serve the main dashboard.html directly (not the templates/ copy)
