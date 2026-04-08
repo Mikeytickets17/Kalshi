@@ -37,6 +37,7 @@ from stock_trader import StockTrader
 from whale_tracker import WhaleTracker, WhaleSignal
 from edge_detector import EdgeDetector, MarketEdge
 from regime_detector import RegimeDetector
+from btc_trader import BTCTrader
 
 # --- Logging Setup ---
 
@@ -109,6 +110,9 @@ class LatencyArbBot:
         # Components — Regime Detector (pick ONE direction, stop fighting yourself)
         self._regime = RegimeDetector(window_hours=4.0)
 
+        # Components — BTC 15-Minute Trader (Kalshi crypto contracts)
+        self._btc_trader = BTCTrader()
+
         # Initialize shared state — recover from previous session if possible
         prev_state = shared_state.load_from_disk()
         if prev_state and prev_state.get("portfolio_value", 0) > 0:
@@ -168,6 +172,8 @@ class LatencyArbBot:
             asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
             # Strategy 6: Edge Detector (market loopholes)
             asyncio.create_task(self._edge_scanner(), name="edge_scanner"),
+            # Strategy 7: BTC 15-Minute Kalshi Contracts
+            asyncio.create_task(self._btc_trader.start(), name="btc_15min"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
             # Daily Telegram summary
