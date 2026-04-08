@@ -34,7 +34,7 @@ BINANCE_WS_URL: str = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443
 COINBASE_WS_URL: str = os.getenv("COINBASE_WS_URL", "wss://ws-feed.exchange.coinbase.com")
 
 # --- Trump Monitor ---
-TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECONDS", "3.0"))
+TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECONDS", "0.5"))
 TRUMP_MIN_CONFIDENCE: float = float(os.getenv("TRUMP_MIN_CONFIDENCE", "0.45"))
 TRUMP_TRADE_SIZE_PCT: float = float(os.getenv("TRUMP_TRADE_SIZE_PCT", "0.06"))
 TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", "750.0"))

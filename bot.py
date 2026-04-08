@@ -539,9 +539,8 @@ class LatencyArbBot:
                     )
                     continue
 
-                # WAIT briefly for market reaction
-                logger.info("Trump post detected — waiting 2s for market reaction...")
-                await asyncio.sleep(2)
+                # EXECUTE IMMEDIATELY — no waiting, speed is everything
+                logger.info("Trump post detected — EXECUTING NOW")
 
                 # In paper mode: use sentiment direction directly (no simulated order book gate)
                 # In live mode: check real order book for confirmation
@@ -782,9 +781,8 @@ class LatencyArbBot:
                     logger.debug("No tradeable actions from this headline")
                     continue
 
-                # WAIT 2 seconds for market to react before trading
-                logger.info("News detected — waiting 2s for market reaction...")
-                await asyncio.sleep(2)
+                # EXECUTE IMMEDIATELY — speed is the edge
+                logger.info("News detected — EXECUTING NOW")
 
                 # Execute each action
                 for action in actions:
