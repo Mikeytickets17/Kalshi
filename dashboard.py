@@ -1,4 +1,4 @@
-"""Kalshi Trading Bot Dashboard — reads bot_state.json, serves to browser."""
+"""Kalshi Trading Bot Dashboard."""
 import json
 import os
 import time
@@ -7,9 +7,9 @@ from flask import Flask, jsonify, Response
 app = Flask(__name__)
 
 INITIAL_BALANCE = 10000.0
-STATE_FILE = os.path.join(os.path.dirname(__file__), 'bot_state.json')
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot_state.json')
+DASHBOARD_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dashboard.html')
 
-# Cache the last good state so we never flash zeros
 _last_good_state = None
 
 def get_state():
@@ -18,14 +18,13 @@ def get_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
                 raw = f.read()
-            if len(raw) > 10:  # ignore empty/partial writes
+            if len(raw) > 10:
                 s = json.loads(raw)
                 if s.get('trade_count', 0) > 0 or s.get('bot_running'):
-                    _last_good_state = s  # cache it
+                    _last_good_state = s
                     return s
     except (json.JSONDecodeError, IOError):
-        pass  # file was being written, use cache
-    # Return cached state if available
+        pass
     if _last_good_state:
         return _last_good_state
     return None
@@ -39,8 +38,8 @@ def add_cors(response):
 
 @app.route('/')
 def index():
-    html_path = os.path.join(os.path.dirname(__file__), 'templates', 'dashboard.html')
-    with open(html_path, 'r', encoding='utf-8') as f:
+    # Serve the ROOT dashboard.html — the exact same file that works at file:///
+    with open(DASHBOARD_FILE, 'r', encoding='utf-8') as f:
         return Response(f.read(), mimetype='text/html')
 
 @app.route('/api/state')
