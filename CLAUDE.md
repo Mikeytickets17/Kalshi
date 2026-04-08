@@ -145,3 +145,35 @@
 - Cut positions too early — let them breathe
 - Trade only BTC on every headline — use chain reactions for right assets
 - Forget that this sandbox blocks ALL outbound HTTP (403 on everything)
+
+## FINAL SYSTEM DESIGN (CONFIRMED WITH USER)
+- **KALSHI CONTRACTS ONLY** — no more Binance paper BTC trades, no Alpaca stock trades
+- **$1,000 starting capital** when going live
+- **Position sizing:** $50-100 per trade max
+- **Risk:** Daily loss limit $100 (10%). Individual stop loss $15 per trade.
+- **Small losses, big winners** — bot should judge when to cut vs hold
+- **Brave Search is our AI** — no need for Groq/Anthropic
+- **Binance account available** if needed (for BTC price feed, no key yet)
+- **Alpaca available** if needed (not needed for Kalshi-only)
+- **Regime detector active** — only trades in direction of macro trend
+- **TACO detection** — Trump extreme threats = buy the fear
+- **PCE fast path** — ready for tomorrow 8:30 AM
+- **Dashboard must show ONLY real current data** — no cached old trades
+
+## TRUMP BLUFF DETECTION (TACO PATTERN)
+- Trump ALWAYS makes extreme threats before deals (100% historical rate)
+- Wall Street calls it TACO: Trump Always Chickens Out
+- Extreme language (destroy, obliterate, civilization will die) = deal incoming
+- Strategy: BUY the fear when Trump threatens, sell when deal is announced
+- Historical returns: -2% to -5% on threat, +3% to +9.5% on deal
+
+## KEYWORD MARKET IMPACT DATA (20 Years Research)
+- "tariff" = S&P -2.7% same day (proven by academic studies)
+- "deal" / "pause" = S&P +1% to +9.5%
+- "Don't worry" = futures +0.8% to +1.3%
+- "ceasefire" = stocks +2-5%, oil -10-20% (INSTANT)
+- "invasion" = stocks -5%, oil +20%
+- Fed "patient" / "accommodative" = +1% to +2%
+- Fed "restrictive" / "whatever it takes" = -3% to -5%
+- PCE below expectations = BTC +3-5%, QQQ +1-2%
+- PCE above expectations = BTC -3-5%, QQQ -1-2%
