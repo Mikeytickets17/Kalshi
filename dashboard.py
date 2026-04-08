@@ -137,7 +137,9 @@ def index():
 
 @app.route("/api/state")
 def api_state():
-    return jsonify(get_dashboard_state())
+    response = jsonify(get_dashboard_state())
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
 
 if __name__ == "__main__":
