@@ -152,27 +152,8 @@ class LatencyArbBot:
         )
 
         tasks = [
-            # Strategy 1: Latency Arbitrage
-            asyncio.create_task(self._price_feed.start(), name="price_feed"),
-            asyncio.create_task(self._scanner.start(), name="scanner"),
-            asyncio.create_task(self._signal_processor(), name="signal_processor"),
-            asyncio.create_task(self._exit_monitor(), name="exit_monitor"),
-            # Strategy 2: Trump News Trading
-            asyncio.create_task(self._trump_monitor.start(), name="trump_monitor"),
-            asyncio.create_task(self._trump_news_processor(), name="trump_processor"),
-            asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
-            # Order Book + Flow Analysis
-            asyncio.create_task(self._orderbook.start(), name="orderbook"),
-            # Strategy 3: Universal News → Stocks + BTC + Kalshi
-            asyncio.create_task(self._news_feed.start(), name="news_feed"),
-            asyncio.create_task(self._news_processor(), name="news_processor"),
-            asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
-            # Strategy 5: Whale Tracker (copy smart money on Kalshi)
-            asyncio.create_task(self._whale_tracker.start(), name="whale_tracker"),
-            asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
-            # Strategy 6: Edge Detector (market loopholes)
-            asyncio.create_task(self._edge_scanner(), name="edge_scanner"),
-            # Strategy 7: BTC 15-Minute Kalshi Contracts
+            # ═══ BTC 15-MINUTE TRADER ONLY ═══
+            # All other strategies disabled until BTC is perfected
             asyncio.create_task(self._btc_trader.start(), name="btc_15min"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
