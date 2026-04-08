@@ -516,7 +516,65 @@ class LatencyArbBot:
                     text=post.text, source=post.source,
                 )
 
-                # Analyze sentiment with Claude (or rule-based fallback)
+                # FAST PATH: instant keyword detection for speed-critical trades
+                # This fires BEFORE the AI analysis for maximum speed
+                text_lower = post.text.lower()
+                fast_direction = None
+                fast_confidence = 0.0
+
+                # Bullish keywords — instant BUY
+                if any(kw in text_lower for kw in [
+                    "bitcoin reserve", "crypto capital", "strategic reserve",
+                    "rate cut", "cut rates", "ceasefire", "peace deal",
+                    "peace agreement", "trade deal", "deal signed",
+                    "crypto executive order", "bitcoin executive order",
+                    "etf approved", "etf approval",
+                ]):
+                    fast_direction = "BUY"
+                    fast_confidence = 0.80
+                    logger.info("FAST PATH: BULLISH keywords detected — trading in <100ms")
+
+                # Bearish keywords — instant SELL
+                elif any(kw in text_lower for kw in [
+                    "tariff", "tariffs", "trade war", "sanctions",
+                    "military strike", "troops deployed", "invasion",
+                    "nuclear", "bomb", "attack", "war ",
+                    "shutdown", "impeach", "fire the fed",
+                ]):
+                    fast_direction = "SELL"
+                    fast_confidence = 0.75
+                    logger.info("FAST PATH: BEARISH keywords detected — trading in <100ms")
+
+                # Execute fast path trade immediately while AI analyzes
+                if fast_direction and self._available_balance > config.MIN_TRADE_SIZE_USDC:
+                    fast_size = min(self._portfolio_value * 0.04, config.TRUMP_MAX_TRADE_SIZE_USDC)
+                    if fast_size <= self._available_balance:
+                        if fast_direction == "BUY":
+                            result = self._exchange.buy("BTC", fast_size)
+                        else:
+                            result = self._exchange.sell("BTC", fast_size)
+                        if result.success:
+                            fast_tid = f"fast-trump-{int(time.time()*1000)}"
+                            self._trade_count += 1
+                            self._available_balance -= fast_size
+                            self._trump_positions.append({
+                                "entry_time": time.time(), "side": fast_direction,
+                                "asset": "BTC", "entry_price": result.filled_price,
+                                "size_usd": result.filled_usd, "qty": result.filled_qty,
+                                "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
+                                "trade_id": fast_tid, "post_text": post.text[:100],
+                                "sentiment": fast_direction, "confidence": fast_confidence,
+                            })
+                            shared_state.record_trade_opened(
+                                trade_id=fast_tid, strategy="TRUMP", side=fast_direction,
+                                asset="BTC", venue="Binance", entry_price=result.filled_price,
+                                size_usd=fast_size, confidence=fast_confidence,
+                                reason=f"FAST PATH: {post.text[:60]}",
+                            )
+                            logger.info("FAST TRADE: %s BTC $%.2f in <100ms on keyword match",
+                                        fast_direction, fast_size)
+
+                # Now run full AI analysis (takes 1-3 seconds, but fast trade already placed)
                 sentiment = await self._sentiment.analyze(post)
 
                 # Alert: Trump post detected with sentiment
@@ -775,14 +833,49 @@ class LatencyArbBot:
                     news.priority.upper(), news.headline[:80], news.source,
                 )
 
-                # Analyze with Claude or rules
+                # FAST PATH for critical news — trade BEFORE AI analysis
+                headline_lower = news.headline.lower()
+                if news.priority == "critical":
+                    fast_news_side = None
+                    if any(kw in headline_lower for kw in ["rate cut", "cuts rate", "fed cut", "ceasefire", "peace deal", "etf approved", "bitcoin reserve"]):
+                        fast_news_side = "BUY"
+                    elif any(kw in headline_lower for kw in ["tariff", "trade war", "sanctions", "military strike", "invasion", "war ", "nuclear"]):
+                        fast_news_side = "SELL"
+
+                    if fast_news_side and self._available_balance > config.MIN_TRADE_SIZE_USDC:
+                        fast_size = min(self._portfolio_value * 0.04, 500)
+                        if fast_size <= self._available_balance:
+                            if fast_news_side == "BUY":
+                                result = self._exchange.buy("BTC", fast_size)
+                            else:
+                                result = self._exchange.sell("BTC", fast_size)
+                            if result.success:
+                                fast_ntid = f"fast-news-{int(time.time()*1000)}"
+                                self._trade_count += 1
+                                self._available_balance -= fast_size
+                                self._news_positions.append({
+                                    "entry_time": time.time(), "venue": "binance",
+                                    "asset": "BTC", "side": fast_news_side,
+                                    "size_usd": fast_size, "entry_price": result.filled_price,
+                                    "hold_until": time.time() + 1200,
+                                    "headline": news.headline[:80], "trade_id": fast_ntid,
+                                })
+                                shared_state.record_trade_opened(
+                                    trade_id=fast_ntid, strategy="NEWS", side=fast_news_side,
+                                    asset="BTC", venue="Binance", entry_price=result.filled_price,
+                                    size_usd=fast_size, confidence=0.80,
+                                    reason=f"FAST: {news.headline[:60]}",
+                                )
+                                logger.info("FAST NEWS TRADE: %s BTC $%.2f — %s", fast_news_side, fast_size, news.headline[:50])
+
+                # Full AI analysis (runs after fast trade is already placed)
                 actions = await self._news_analyzer.analyze(news)
                 if not actions:
-                    logger.debug("No tradeable actions from this headline")
+                    logger.debug("No additional actions from AI analysis")
                     continue
 
                 # EXECUTE IMMEDIATELY — speed is the edge
-                logger.info("News detected — EXECUTING NOW")
+                logger.info("News analyzed — EXECUTING %d actions", len(actions))
 
                 # Execute each action
                 for action in actions:
