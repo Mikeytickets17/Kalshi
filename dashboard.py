@@ -1,4 +1,4 @@
-"""Kalshi Trading Bot Dashboard"""
+"""Kalshi Trading Bot Dashboard — reads bot_state.json, serves to browser."""
 import json
 import os
 import time
@@ -9,15 +9,25 @@ app = Flask(__name__)
 INITIAL_BALANCE = 10000.0
 STATE_FILE = os.path.join(os.path.dirname(__file__), 'bot_state.json')
 
+# Cache the last good state so we never flash zeros
+_last_good_state = None
+
 def get_state():
+    global _last_good_state
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
-                s = json.load(f)
-            if time.time() - s.get('last_updated', 0) < 86400:
-                return s
-    except Exception:
-        pass
+                raw = f.read()
+            if len(raw) > 10:  # ignore empty/partial writes
+                s = json.loads(raw)
+                if s.get('trade_count', 0) > 0 or s.get('bot_running'):
+                    _last_good_state = s  # cache it
+                    return s
+    except (json.JSONDecodeError, IOError):
+        pass  # file was being written, use cache
+    # Return cached state if available
+    if _last_good_state:
+        return _last_good_state
     return None
 
 @app.after_request
@@ -36,7 +46,7 @@ def index():
 @app.route('/api/state')
 def api_state():
     s = get_state()
-    if not s or not s.get('bot_running'):
+    if not s:
         return jsonify({'bot_running': False, 'portfolio_value': INITIAL_BALANCE, 'positions': [], 'closed_trades': [], 'signals': [], 'trump_posts': [], 'news_items': [], 'equity_curve': [INITIAL_BALANCE], 'trade_count': 0, 'win_count': 0, 'total_trades': 0, 'wins': 0, 'losses': 0, 'total_pnl': 0, 'realized_pnl': 0, 'unrealized_pnl': 0, 'total_exposure': 0, 'win_rate': 0, 'peak_value': INITIAL_BALANCE, 'initial_balance': INITIAL_BALANCE, 'drawdown_pct': 0, 'risk': {}, 'uptime': '0m', 'last_scan': 'Not running'})
     pv = s.get('portfolio_value', INITIAL_BALANCE)
     pk = s.get('peak_value', INITIAL_BALANCE)
