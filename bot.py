@@ -430,7 +430,7 @@ class LatencyArbBot:
         # Paper mode: simulate resolution after random 5-15 min
         if self._paper_mode:
             age = time.time() - position.entry_time
-            if age > random.uniform(300, 900):
+            if age > random.uniform(1800, 5400):  # 30-90 minutes — let positions breathe
                 # Simulate win/loss: lower entry price = more edge = higher win rate
                 # Buying YES at 0.40 has more upside than at 0.90
                 edge_factor = 1.0 - position.avg_price  # higher when entry is lower
@@ -857,7 +857,7 @@ class LatencyArbBot:
                                     "entry_time": time.time(), "venue": "binance",
                                     "asset": "BTC", "side": fast_news_side,
                                     "size_usd": fast_size, "entry_price": result.filled_price,
-                                    "hold_until": time.time() + 1200,
+                                    "hold_until": time.time() + 3600,  # 60 min hold
                                     "headline": news.headline[:80], "trade_id": fast_ntid,
                                 })
                                 shared_state.record_trade_opened(

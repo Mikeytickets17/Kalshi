@@ -38,7 +38,7 @@ TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECOND
 TRUMP_MIN_CONFIDENCE: float = float(os.getenv("TRUMP_MIN_CONFIDENCE", "0.45"))
 TRUMP_TRADE_SIZE_PCT: float = float(os.getenv("TRUMP_TRADE_SIZE_PCT", "0.06"))
 TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", "750.0"))
-TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "20"))
+TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "60"))
 TRUMP_SCALE_BY_CONFIDENCE: bool = os.getenv("TRUMP_SCALE_BY_CONFIDENCE", "true").lower() == "true"
 
 # --- Twitter/X API ---
