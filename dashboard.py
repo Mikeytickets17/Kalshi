@@ -1,129 +1,24 @@
-"""
-Kalshi Trading Bot — Live Dashboard
-
-A Flask web dashboard that visualizes the bot's real state:
-portfolio, positions, signals, risk metrics, and activity log.
-
-Reads from shared_state (JSON file) written by the running bot.
-Starts at zero. All data comes from real bot activity.
-
-Usage:
-    python dashboard.py
-    Open http://localhost:5050
-"""
-
+"""Kalshi Trading Bot Dashboard"""
+import json
+import os
 import time
-from flask import Flask, jsonify, render_template
-
-import shared_state
+from flask import Flask, jsonify, Response
 
 app = Flask(__name__)
 
-INITIAL_BALANCE = 10_000.00
+INITIAL_BALANCE = 10000.0
+STATE_FILE = os.path.join(os.path.dirname(__file__), 'bot_state.json')
 
-
-def get_dashboard_state() -> dict:
-    """Return state for the dashboard — from bot's shared state or empty."""
-    # Try loading from shared state (bot writes this)
-    disk_state = shared_state.load_from_disk()
-    if disk_state and disk_state.get("bot_running"):
-        return _format_bot_state(disk_state)
-
-    # Also check in-memory state (if bot and dashboard are in same process)
-    snap = shared_state.get_snapshot()
-    if snap.get("bot_running"):
-        return _format_bot_state(snap)
-
-    # Bot not running — return empty state
-    return _empty_state()
-
-
-def _format_bot_state(s: dict) -> dict:
-    """Format the raw bot state into dashboard-friendly JSON."""
-    portfolio_value = s.get("portfolio_value", INITIAL_BALANCE)
-    initial = s.get("initial_balance", INITIAL_BALANCE)
-    peak = s.get("peak_value", INITIAL_BALANCE)
-    closed = s.get("closed_trades", [])
-    active = s.get("active_positions", [])
-    total_closed = len(closed)
-    wins = s.get("win_count", 0)
-    losses = total_closed - wins
-    total_pnl = portfolio_value - initial
-    drawdown = (peak - portfolio_value) / peak if peak > 0 else 0
-
-    uptime_s = int(time.time() - s.get("start_time", time.time()))
-    days, rem = divmod(uptime_s, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    uptime = f"{days}d {hours}h {minutes}m" if days else f"{hours}h {minutes}m"
-
-    last_updated = s.get("last_updated", time.time())
-    scan_ago = int(time.time() - last_updated)
-    scan_str = f"{scan_ago}s ago" if scan_ago < 60 else f"{scan_ago // 60}m ago"
-
-    return {
-        "bot_running": True,
-        "portfolio_value": round(portfolio_value, 2),
-        "initial_balance": initial,
-        "total_pnl": round(total_pnl, 2),
-        "roi_pct": round(total_pnl / initial * 100, 2) if initial else 0,
-        "peak_value": round(peak, 2),
-        "total_exposure": round(sum(p.get("size_usd", 0) for p in active), 2),
-        "unrealized_pnl": round(sum(p.get("unrealized_pnl", 0) for p in active), 2),
-        "realized_pnl": round(sum(c.get("pnl", 0) for c in closed), 2),
-        "equity_curve": s.get("equity_curve", [initial])[-168:],
-        "positions": active,
-        "signals": s.get("signals", []),
-        "closed_trades": closed,
-        "trump_posts": s.get("trump_posts", []),
-        "news_items": s.get("news_items", []),
-        "risk": s.get("risk", {}),
-        "win_rate": round(wins / max(total_closed, 1) * 100, 1),
-        "total_trades": total_closed,
-        "wins": wins,
-        "losses": losses,
-        "trade_count": s.get("trade_count", 0),
-        "win_count": wins,
-        "drawdown_pct": round(drawdown * 100, 2),
-        "uptime": uptime,
-        "last_scan": scan_str,
-        "mode": "PAPER",
-        "environment": "DEMO",
-    }
-
-
-def _empty_state() -> dict:
-    """Empty dashboard state when bot is not running."""
-    return {
-        "bot_running": False,
-        "portfolio_value": INITIAL_BALANCE,
-        "initial_balance": INITIAL_BALANCE,
-        "total_pnl": 0,
-        "roi_pct": 0,
-        "peak_value": INITIAL_BALANCE,
-        "total_exposure": 0,
-        "unrealized_pnl": 0,
-        "realized_pnl": 0,
-        "equity_curve": [INITIAL_BALANCE],
-        "positions": [],
-        "signals": [],
-        "closed_trades": [],
-        "trump_posts": [],
-        "news_items": [],
-        "risk": {},
-        "win_rate": 0,
-        "total_trades": 0,
-        "wins": 0,
-        "losses": 0,
-        "trade_count": 0,
-        "win_count": 0,
-        "drawdown_pct": 0,
-        "uptime": "0h 0m",
-        "last_scan": "Not running",
-        "mode": "PAPER",
-        "environment": "DEMO",
-    }
-
+def get_state():
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                s = json.load(f)
+            if time.time() - s.get('last_updated', 0) < 86400:
+                return s
+    except Exception:
+        pass
+    return None
 
 @app.after_request
 def add_cors(response):
@@ -132,24 +27,30 @@ def add_cors(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     return response
 
-
-@app.route("/")
+@app.route('/')
 def index():
-    # Serve the main dashboard.html directly (not the templates/ copy)
-    # This ensures localhost:5050 always shows the latest v5.1 dashboard
-    import os
-    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
-    with open(dashboard_path, "r") as f:
-        return f.read()
+    html_path = os.path.join(os.path.dirname(__file__), 'templates', 'dashboard.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        return Response(f.read(), mimetype='text/html')
 
-
-@app.route("/api/state")
+@app.route('/api/state')
 def api_state():
-    response = jsonify(get_dashboard_state())
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    return response
+    s = get_state()
+    if not s or not s.get('bot_running'):
+        return jsonify({'bot_running': False, 'portfolio_value': INITIAL_BALANCE, 'positions': [], 'closed_trades': [], 'signals': [], 'trump_posts': [], 'news_items': [], 'equity_curve': [INITIAL_BALANCE], 'trade_count': 0, 'win_count': 0, 'total_trades': 0, 'wins': 0, 'losses': 0, 'total_pnl': 0, 'realized_pnl': 0, 'unrealized_pnl': 0, 'total_exposure': 0, 'win_rate': 0, 'peak_value': INITIAL_BALANCE, 'initial_balance': INITIAL_BALANCE, 'drawdown_pct': 0, 'risk': {}, 'uptime': '0m', 'last_scan': 'Not running'})
+    pv = s.get('portfolio_value', INITIAL_BALANCE)
+    pk = s.get('peak_value', INITIAL_BALANCE)
+    cl = s.get('closed_trades', [])
+    ac = s.get('active_positions', [])
+    tc = s.get('trade_count', 0)
+    wc = s.get('win_count', 0)
+    tp = pv - INITIAL_BALANCE
+    dd = (pk - pv) / pk if pk > 0 else 0
+    ut = int(time.time() - s.get('start_time', time.time()))
+    uh = ut // 3600
+    um = (ut % 3600) // 60
+    return jsonify({'bot_running': True, 'portfolio_value': round(pv, 2), 'initial_balance': INITIAL_BALANCE, 'total_pnl': round(tp, 2), 'peak_value': round(pk, 2), 'total_exposure': round(sum(p.get('size_usd', 0) for p in ac), 2), 'unrealized_pnl': round(sum(p.get('unrealized_pnl', 0) for p in ac), 2), 'realized_pnl': round(sum(c.get('pnl', 0) for c in cl), 2), 'equity_curve': s.get('equity_curve', [INITIAL_BALANCE])[-200:], 'positions': ac, 'closed_trades': cl, 'signals': s.get('signals', []), 'trump_posts': s.get('trump_posts', []), 'news_items': s.get('news_items', []), 'risk': s.get('risk', {}), 'trade_count': tc, 'win_count': wc, 'total_trades': len(cl), 'wins': wc, 'losses': tc - wc, 'win_rate': round(wc / max(tc, 1) * 100, 1), 'drawdown_pct': round(dd * 100, 2), 'uptime': f'{uh}h {um}m', 'last_scan': f'{int(time.time() - s.get("last_updated", time.time()))}s ago'})
 
-
-if __name__ == "__main__":
-    print("Starting dashboard at http://localhost:5050")
-    app.run(host="0.0.0.0", port=5050, debug=False)
+if __name__ == '__main__':
+    print('Dashboard: http://localhost:5050')
+    app.run(host='0.0.0.0', port=5050, debug=False)
