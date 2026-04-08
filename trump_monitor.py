@@ -120,28 +120,26 @@ class TrumpMonitor:
             self._poll_interval,
         )
 
-        if config.PAPER_MODE:
-            await self._run_paper_mode()
+        # ALWAYS poll real sources — even in paper mode.
+        # Paper mode only affects trade execution, not data collection.
+        tasks = [
+            asyncio.create_task(self._poll_truth_social(), name="truthsocial"),
+            asyncio.create_task(self._poll_rss(), name="rss"),
+            asyncio.create_task(self._poll_nitter(), name="nitter"),
+            asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
+        ]
+        # Add Twitter API pollers if bearer token is configured
+        if config.TWITTER_BEARER_TOKEN:
+            tasks.append(
+                asyncio.create_task(self._poll_twitter_api(), name="twitter_api"),
+            )
+            tasks.append(
+                asyncio.create_task(self._poll_twitter_search(), name="twitter_search"),
+            )
+            logger.info("Twitter/X API polling enabled")
         else:
-            # Run all sources concurrently for fastest detection
-            tasks = [
-                asyncio.create_task(self._poll_truth_social(), name="truthsocial"),
-                asyncio.create_task(self._poll_rss(), name="rss"),
-                asyncio.create_task(self._poll_nitter(), name="nitter"),
-                asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
-            ]
-            # Add Twitter API pollers if bearer token is configured
-            if config.TWITTER_BEARER_TOKEN:
-                tasks.append(
-                    asyncio.create_task(self._poll_twitter_api(), name="twitter_api"),
-                )
-                tasks.append(
-                    asyncio.create_task(self._poll_twitter_search(), name="twitter_search"),
-                )
-                logger.info("Twitter/X API polling enabled")
-            else:
-                logger.info("Twitter/X API polling disabled (no TWITTER_BEARER_TOKEN)")
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            logger.info("Twitter/X API polling disabled (no TWITTER_BEARER_TOKEN)")
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
         self._running = False

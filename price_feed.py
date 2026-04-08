@@ -101,14 +101,14 @@ class PriceFeed:
         self._running = True
         logger.info("PriceFeed starting for assets: %s", config.TARGET_ASSETS)
 
-        if config.PAPER_MODE:
-            await self._run_paper_mode()
-        else:
-            tasks = [
-                asyncio.create_task(self._run_binance(), name="binance_feed"),
-                asyncio.create_task(self._run_coinbase(), name="coinbase_feed"),
-            ]
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        # ALWAYS connect to real price feeds — paper mode only affects execution
+        tasks = [
+            asyncio.create_task(self._run_binance(), name="binance_feed"),
+            asyncio.create_task(self._run_coinbase(), name="coinbase_feed"),
+        ]
+        # Fallback to paper simulation if real feeds fail to connect
+        tasks.append(asyncio.create_task(self._paper_fallback(), name="price_fallback"))
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
         self._running = False
@@ -211,6 +211,19 @@ class PriceFeed:
         )
         self._prices[asset].update(tick)
         self._history[asset].append(tick)
+
+    async def _paper_fallback(self) -> None:
+        """Only start paper simulation if real feeds haven't connected after 15 seconds."""
+        await asyncio.sleep(15)
+        has_real_data = any(
+            self._prices[a].consensus_price > 0 for a in config.TARGET_ASSETS
+            if a in self._prices
+        )
+        if not has_real_data:
+            logger.warning("Real price feeds failed — falling back to paper simulation")
+            await self._run_paper_mode()
+        else:
+            logger.info("Real price feeds connected — no paper fallback needed")
 
     # --- Paper Mode ---
 

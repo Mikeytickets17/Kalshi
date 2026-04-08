@@ -149,9 +149,7 @@ class NewsFeed:
             tasks.append(asyncio.create_task(self._poll_brave_search(), name="brave_search"))
             logger.info("Brave Search enabled for real-time news")
 
-        if config.PAPER_MODE:
-            tasks.append(asyncio.create_task(self._run_paper_mode(), name="paper_news"))
-
+        # No fake paper news — real RSS feeds and Brave Search only
         await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:

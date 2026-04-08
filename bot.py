@@ -506,32 +506,33 @@ class LatencyArbBot:
                     )
                     continue
 
-                # WAIT for market reaction before committing
-                logger.info("Trump post detected — waiting 2s for order flow confirmation...")
+                # WAIT briefly for market reaction
+                logger.info("Trump post detected — waiting 2s for market reaction...")
                 await asyncio.sleep(2)
 
-                # CHECK ORDER BOOK: is the market actually reacting?
-                btc_decision = self._orderbook.make_decision(
-                    "BTC", sentiment.direction, sentiment.confidence
-                )
-
-                if not btc_decision.should_trade:
-                    logger.info(
-                        "ORDER BOOK REJECTED Trump trade: %s",
-                        btc_decision.reason,
-                    )
-                    # Still try Kalshi contracts even if BTC flow doesn't confirm
-                    # (contracts react differently than spot)
+                # In paper mode: use sentiment direction directly (no simulated order book gate)
+                # In live mode: check real order book for confirmation
+                if self._paper_mode:
+                    trade_side = "BUY" if sentiment.direction == "BULLISH" else "SELL" if sentiment.direction == "BEARISH" else None
+                    trade_conf = sentiment.confidence
+                    if trade_side:
+                        logger.info("SENTIMENT CONFIRMED: %s BTC — %s (conf=%.2f)",
+                                    trade_side, sentiment.direction, sentiment.confidence)
                 else:
-                    logger.info(
-                        "ORDER BOOK CONFIRMED: %s BTC — %s",
-                        btc_decision.side, btc_decision.reason,
+                    btc_decision = self._orderbook.make_decision(
+                        "BTC", sentiment.direction, sentiment.confidence
                     )
+                    if not btc_decision.should_trade:
+                        logger.info("ORDER BOOK REJECTED: %s", btc_decision.reason)
+                    else:
+                        logger.info("ORDER BOOK CONFIRMED: %s BTC — %s",
+                                    btc_decision.side, btc_decision.reason)
+                    trade_side = btc_decision.side if btc_decision.should_trade else None
+                    trade_conf = btc_decision.confidence
 
-                # Calculate trade size — use book-confirmed direction
-                trade_side = btc_decision.side if btc_decision.should_trade else None
+                # Calculate trade size
                 size = min(
-                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * btc_decision.confidence,
+                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * (trade_conf if not self._paper_mode else sentiment.confidence),
                     config.TRUMP_MAX_TRADE_SIZE_USDC,
                 )
                 size = max(size, config.MIN_TRADE_SIZE_USDC)
@@ -752,29 +753,27 @@ class LatencyArbBot:
                 logger.info("News detected — waiting 2s for market reaction...")
                 await asyncio.sleep(2)
 
-                # Execute each action — but ONLY if order book confirms
+                # Execute each action
                 for action in actions:
                     if action.confidence < 0.50:
                         continue
 
-                    # CHECK ORDER BOOK + FLOW before every trade
-                    if action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
+                    # In live mode: check real order book before trading
+                    # In paper mode: trade on AI confidence directly (no simulated gate)
+                    if not self._paper_mode and action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
                         decision = self._orderbook.make_decision(
                             action.asset, action.side, action.confidence
                         )
                         if not decision.should_trade:
-                            logger.info(
-                                "ORDER BOOK REJECTED: %s %s — %s",
-                                action.side, action.asset, decision.reason,
-                            )
+                            logger.info("ORDER BOOK REJECTED: %s %s — %s",
+                                        action.side, action.asset, decision.reason)
                             continue
-
-                        # Use book-adjusted confidence and size
                         action.confidence = decision.confidence
-                        logger.info(
-                            "ORDER BOOK CONFIRMED: %s %s — %s (conf=%.2f)",
-                            decision.side, action.asset, decision.reason, decision.confidence,
-                        )
+                        logger.info("ORDER BOOK CONFIRMED: %s %s — %s (conf=%.2f)",
+                                    decision.side, action.asset, decision.reason, decision.confidence)
+                    elif self._paper_mode:
+                        logger.info("SIGNAL ACCEPTED: %s %s — confidence %.2f (paper mode, real signal)",
+                                    action.side, action.asset, action.confidence)
 
                     size = min(
                         self._portfolio_value * action.size_pct * action.confidence,

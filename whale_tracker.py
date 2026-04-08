@@ -95,10 +95,12 @@ class WhaleTracker:
         self._running = True
         logger.info("WhaleTracker started — scanning all Kalshi markets every %ds", self.SCAN_INTERVAL)
 
-        if config.PAPER_MODE:
-            await self._run_paper_mode()
-        else:
+        # Try live market scanning first — falls back to paper if Kalshi not connected
+        if self._kalshi.is_connected:
             await self._run_live()
+        else:
+            logger.info("Kalshi not connected — whale tracker using paper simulation")
+            await self._run_paper_mode()
 
     async def stop(self) -> None:
         self._running = False
