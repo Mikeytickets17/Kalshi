@@ -17,35 +17,97 @@
 ## WHAT THIS PROJECT IS
 - Automated Kalshi prediction market trading bot
 - Monitors Trump social media + breaking news + whale activity
-- Executes trades on Kalshi, Binance, Alpaca within seconds of market-moving events
+- Executes trades on Kalshi within seconds of market-moving events
 - Goal: be FIRST before hedge funds and whales on every market-moving event
 - Must use 100% REAL data — zero fake/simulated signals
 - Paper mode = real signals, simulated execution (no real money yet)
-- Dashboard at file:///C:/Users/mikey/Kalshi/dashboard.html
+- Dashboard at file:///C:/Users/mikey/Kalshi/kalshi_dashboard.html
 - Also works at http://localhost:5050 when dashboard.py is running
 
-## TRADING STRATEGY: NEWS CHAIN REACTIONS
-- Every headline triggers 5-8 trades across multiple markets
-- chain_reactor.py maps event types to trade cascades:
-  - Iran ceasefire → SHORT oil, LONG airlines, LONG stocks, LONG BTC, SHORT defense, LONG emerging
-  - Rate cut → LONG BTC, LONG QQQ, LONG bonds, SHORT banks
-  - PCE cool → LONG BTC, LONG QQQ, LONG SPY, LONG TLT
-  - PCE hot → SELL everything
-  - Tariffs → SHORT stocks, SHORT China (FXI), LONG gold, LONG agriculture
-  - Oil crash → LONG airlines (JETS), LONG consumer, SHORT oil
-  - Oil spike → LONG energy (XLE), SHORT airlines, SHORT consumer
-  - Crypto bullish → LONG BTC, LONG ETH, LONG COIN, LONG MARA
-  - Earnings beat → LONG specific stock + LONG SPY
-- This is how hedge funds trade — capture every ripple effect from one event
-- The bot trades the RIGHT asset for each headline, not just BTC on everything
+## CURRENT FOCUS: BTC 15-MINUTE CONTRACTS ONLY
+- ALL other strategies disabled until BTC is perfected
+- btc_trader.py is the ONLY active strategy
+- Gets real BTC price from Binance (free, no key)
+- Calculates 60-second momentum
+- If momentum > +0.15% → BUY YES (price going up)
+- If momentum < -0.15% → BUY NO (price going down)
+- Trades fire every 15 minutes, 24/7
+- $75 per trade, $100 daily loss limit
+- Dashboard: kalshi_dashboard.html (new clean version)
 
-## 6 TRADING STRATEGIES
-1. TRUMP SOCIAL MEDIA — 8 sources (Truth Social API/RSS/Atom, Nitter x3, Twitter/X)
-2. LATENCY ARB — CEX price vs Kalshi crypto contracts
-3. BREAKING NEWS — 23+ RSS feeds + Brave Search + Reddit + Google News
-4. KALSHI CONTRACT MATCHING — keyword match any event to Kalshi contracts
-5. WHALE COPY TRADING — detect volume spikes, price jumps on Kalshi
-6. EDGE DETECTION — contract mispricing, time decay, cross-platform arb
+## FINAL SYSTEM DESIGN (CONFIRMED WITH USER)
+- **KALSHI CONTRACTS ONLY** — no more Binance paper BTC trades, no Alpaca stock trades
+- **$1,000 starting capital** when going live
+- **Position sizing:** $50-100 per trade max
+- **Risk:** Daily loss limit $100 (10%). Individual stop loss $15 per trade.
+- **Small losses, big winners** — bot should judge when to cut vs hold
+- **Brave Search is our AI** — no need for Groq/Anthropic
+- **Binance account available** if needed (for BTC price feed, no key yet)
+- **Alpaca available** if needed (not needed for Kalshi-only)
+- **Regime detector active** — only trades in direction of macro trend
+- **TACO detection** — Trump extreme threats = buy the fear
+- **PCE fast path** — ready for tomorrow 8:30 AM
+- **Dashboard must show ONLY real current data** — no cached old trades
+
+## DISABLED STRATEGIES (saved for later)
+- Strategy 1: Latency Arb (price_feed, scanner, signal_processor)
+- Strategy 2: Trump News (trump_monitor, trump_news_processor)
+- Strategy 3: Breaking News (news_feed, news_processor)
+- Strategy 4: Kalshi Contract Matching (contract_matcher)
+- Strategy 5: Whale Copy Trading (whale_tracker)
+- Strategy 6: Edge Detection (edge_detector)
+- All code still exists, just not running in tasks list
+- Re-enable after BTC 15-min is profitable
+
+## RESEARCH: HOW TRADERS TURNED SMALL ACCOUNTS INTO MILLIONS
+- French Whale: $30M → $85M on Trump election (private polls = better info)
+- Iran Trader: $0 → $967K, 93% win rate (insider or speed edge)
+- @theduckguesses: $100 → $145K on Kalshi (compound growth)
+- Caleb Davies: $389K in culture markets (domain expertise + data models)
+- Logan Sudeith: $100K in one month (high-volume culture trades)
+- Key pattern: INFORMATION EDGE + COMPOUND GROWTH + DOMAIN EXPERTISE
+- Kelly Criterion: bet proportional to edge, half-Kelly for safety
+- See RESEARCH_MILLIONAIRE_TRADERS.md for full analysis
+
+## COMPOUND GROWTH TARGET
+- $1,000 → $10,000 in 30 days (10x)
+- $10,000 → $100,000 in 90 days (10x)
+- $100,000 → $1,000,000 in 180 days (10x)
+- Requires: 60%+ win rate, 2:1 payout ratio, reinvesting all profits
+
+## TRUMP BLUFF DETECTION (TACO PATTERN)
+- Trump ALWAYS makes extreme threats before deals (100% historical rate)
+- Wall Street calls it TACO: Trump Always Chickens Out
+- Extreme language (destroy, obliterate, civilization will die) = deal incoming
+- Strategy: BUY the fear when Trump threatens, sell when deal is announced
+- Historical returns: -2% to -5% on threat, +3% to +9.5% on deal
+
+## KEYWORD MARKET IMPACT DATA (20 Years Research)
+- "tariff" = S&P -2.7% same day (proven by academic studies)
+- "deal" / "pause" = S&P +1% to +9.5%
+- "Don't worry" = futures +0.8% to +1.3%
+- "ceasefire" = stocks +2-5%, oil -10-20% (INSTANT)
+- "invasion" = stocks -5%, oil +20%
+- Fed "patient" / "accommodative" = +1% to +2%
+- Fed "restrictive" / "whatever it takes" = -3% to -5%
+- PCE below expectations = BTC +3-5%, QQQ +1-2%
+- PCE above expectations = BTC -3-5%, QQQ -1-2%
+
+## PCE DATA — April 9, 2026 at 8:30 AM
+- Expected: Core PCE 2.5% annual, 0.12% monthly
+- If below → BUY (rate cuts coming)
+- If above → SELL (no rate cuts)
+- Bot has fast path detection for PCE keywords
+- Iran ceasefire dropped oil 17% → removes inflation pressure → likely cool PCE
+
+## KALSHI ACCOUNT SETUP
+- Account created at kalshi.com
+- API Key ID: d380c67d-9531-426a-b443-2eff3c5df967
+- Private key file: C:\Users\mikey\Kalshi\mikebot
+- Currently: KALSHI_USE_DEMO=true (demo money)
+- To go live: change KALSHI_USE_DEMO=false and PAPER_MODE=false in .env
+- IMPORTANT: When PAPER_MODE=false, bot needs real account balance from Kalshi
+  or portfolio shows $0. Keep PAPER_MODE=true until ready with funded account.
 
 ## SPEED OPTIMIZATIONS
 - Trump poll interval: 500ms (was 3000ms)
@@ -62,51 +124,12 @@
 - Max concurrent positions: 50 (was 5)
 - Positions need time to breathe — small dips are noise, not losses
 
-## KEY ARCHITECTURE DECISIONS
-- Paper mode affects EXECUTION only, NOT signals — all data is real
-- Trump monitor ALWAYS polls real Truth Social/Nitter (never fake paper posts)
-- News feed uses ONLY real RSS (no paper news generation)
-- Order book does NOT gate trades in paper mode
-- Price feed tries real Binance/Coinbase first, paper fallback after 15s
-- AI uses multi-provider: Anthropic → Groq → Gemini → Ollama → OpenRouter → rules
-- Dashboard.py caches last good state — never flickers to zeros
-- Dashboard.py serves ROOT dashboard.html (not templates/ copy)
-- Bot state persists to bot_state.json, recovers portfolio on restart
-
-## KALSHI ACCOUNT SETUP
-- Account created at kalshi.com
-- API Key ID: d380c67d-9531-426a-b443-2eff3c5df967
-- Private key file: C:\Users\mikey\Kalshi\mikebot
-- Currently: KALSHI_USE_DEMO=true (demo money)
-- To go live: change KALSHI_USE_DEMO=false and PAPER_MODE=false in .env
-- IMPORTANT: When PAPER_MODE=false, bot needs real account balance from Kalshi
-  or portfolio shows $0. Keep PAPER_MODE=true until ready with funded account.
-
-## KNOWN EDGE OPPORTUNITIES
-- Cross-platform arb: Kalshi vs Polymarket price differences (same event)
-- Combinatorial mispricing: 7,000+ markets with measurable mispricings
-- Options-implied mispricing: SPX options vs Kalshi binary contracts
-- News speed: Kalshi contracts take 1-2 min to reprice, bot trades in <1 sec
-- Favorite-longshot bias: prices not perfectly calibrated (academic research)
-- Kalshi fees: 3-7% on wins — must factor into edge calculation
-
-## CURRENT MARKET CONTEXT (April 8, 2026)
-- US-Iran 2-week ceasefire announced April 7 at 7:45 PM ET
-- Dow +1,200 points (+2.6%), S&P +2.4%, Nasdaq +2.8%
-- Oil crashed 17% from $113 to $93/barrel
-- Peace talks Friday in Islamabad, VP Vance leading
-- Trump posted 50% tariffs on Iran arms suppliers (8:02 AM April 8)
-- Government shutdown day 53, DHS still unfunded
-- BTC at ~$71,500, up on risk-on sentiment
-- PCE inflation data drops tomorrow 8:30 AM — bot is ready
-
-## NEXT STEPS TO LIVE CAPITAL
-1. Run paper mode for 7 days to build track record
-2. Show consistent positive P&L and win rate
-3. Fund Kalshi account with starting capital
-4. Switch KALSHI_USE_DEMO=false and PAPER_MODE=false
-5. Start with small position sizes, scale up as track record proves out
-6. Add Telegram alerts for real-time trade notifications on phone
+## EXIT RULES
+- Take profit: +$50
+- Stop loss: -$15
+- Time exit: 60 minutes
+- No more random coin-flip exits
+- No more closing $900 positions for $1 loss
 
 ## WINDOWS-SPECIFIC ISSUES FIXED
 - asyncio.loop.add_signal_handler() crashes on Windows → platform check
@@ -120,12 +143,17 @@
 - localhost:5050 serves ROOT dashboard.html
 - CORS headers added for file:// access
 - Old P&L cached in localStorage → delete bot_state.json to reset
+- NEW: kalshi_dashboard.html — clean Kalshi-only dashboard
 
 ## FILES ON DISK
 - RUN.bat / RUN.ps1 — launcher
+- btc_trader.py — 15-minute BTC Kalshi contract trader
 - chain_reactor.py — maps headlines to multi-asset trade cascades
 - edge_detector.py — finds contract mispricing and arb opportunities
 - whale_tracker.py — detects smart money flow on Kalshi
+- regime_detector.py — picks market direction, stops trading both sides
+- kalshi_dashboard.html — NEW clean Kalshi-only dashboard
+- RESEARCH_MILLIONAIRE_TRADERS.md — how traders turned small accounts into millions
 - PROJECT_BRIEF.md — AI handoff document
 - OVERNIGHT_REPORT.md — overnight trade report
 - CLAUDE.md — this file
@@ -145,35 +173,5 @@
 - Cut positions too early — let them breathe
 - Trade only BTC on every headline — use chain reactions for right assets
 - Forget that this sandbox blocks ALL outbound HTTP (403 on everything)
-
-## FINAL SYSTEM DESIGN (CONFIRMED WITH USER)
-- **KALSHI CONTRACTS ONLY** — no more Binance paper BTC trades, no Alpaca stock trades
-- **$1,000 starting capital** when going live
-- **Position sizing:** $50-100 per trade max
-- **Risk:** Daily loss limit $100 (10%). Individual stop loss $15 per trade.
-- **Small losses, big winners** — bot should judge when to cut vs hold
-- **Brave Search is our AI** — no need for Groq/Anthropic
-- **Binance account available** if needed (for BTC price feed, no key yet)
-- **Alpaca available** if needed (not needed for Kalshi-only)
-- **Regime detector active** — only trades in direction of macro trend
-- **TACO detection** — Trump extreme threats = buy the fear
-- **PCE fast path** — ready for tomorrow 8:30 AM
-- **Dashboard must show ONLY real current data** — no cached old trades
-
-## TRUMP BLUFF DETECTION (TACO PATTERN)
-- Trump ALWAYS makes extreme threats before deals (100% historical rate)
-- Wall Street calls it TACO: Trump Always Chickens Out
-- Extreme language (destroy, obliterate, civilization will die) = deal incoming
-- Strategy: BUY the fear when Trump threatens, sell when deal is announced
-- Historical returns: -2% to -5% on threat, +3% to +9.5% on deal
-
-## KEYWORD MARKET IMPACT DATA (20 Years Research)
-- "tariff" = S&P -2.7% same day (proven by academic studies)
-- "deal" / "pause" = S&P +1% to +9.5%
-- "Don't worry" = futures +0.8% to +1.3%
-- "ceasefire" = stocks +2-5%, oil -10-20% (INSTANT)
-- "invasion" = stocks -5%, oil +20%
-- Fed "patient" / "accommodative" = +1% to +2%
-- Fed "restrictive" / "whatever it takes" = -3% to -5%
-- PCE below expectations = BTC +3-5%, QQQ +1-2%
-- PCE above expectations = BTC -3-5%, QQQ -1-2%
+- Run multiple strategies at once until BTC is perfected
+- Show SPY, USO, LMT, IRAN, GOV-SHUTDOWN trades — BTC ONLY right now
