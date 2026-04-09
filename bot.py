@@ -1615,8 +1615,13 @@ async def main() -> None:
         logger.info("Received shutdown signal")
         shutdown_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+    # Windows doesn't support add_signal_handler — use try/except
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+    except NotImplementedError:
+        # Windows: Ctrl+C will raise KeyboardInterrupt instead
+        pass
 
     bot_task = asyncio.create_task(bot.run())
     shutdown_task = asyncio.create_task(shutdown_event.wait())
