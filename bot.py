@@ -24,6 +24,7 @@ import shared_state
 from exchange import BinanceExecutor, TradeResult
 from flow_analyzer import FlowAnalyzer, ScalpDecision
 from edge_scanner import EdgeScanner, ArbOpportunity
+from ghpages_publisher import GHPagesPublisher
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
@@ -96,6 +97,9 @@ class LatencyArbBot:
 
         # Components — Edge Strategies (arb, settlement sniper, bracket arb)
         self._edge_scanner = EdgeScanner()
+
+        # Components — Dashboard publisher (pushes state to GitHub Pages)
+        self._publisher = GHPagesPublisher()
 
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
@@ -175,6 +179,8 @@ class LatencyArbBot:
             asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
+            # Publish state to GitHub Pages dashboard
+            asyncio.create_task(self._publisher.start(), name="ghpages_publisher"),
             # Daily Telegram summary
             asyncio.create_task(self._daily_summary_scheduler(), name="daily_summary"),
         ]
