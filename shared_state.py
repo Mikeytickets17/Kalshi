@@ -48,7 +48,7 @@ def init(initial_balance: float = 10000.0) -> None:
     """Initialize state at bot startup."""
     with _lock:
         _state["portfolio_value"] = initial_balance
-        _state["initial_balance"] = initial_balance
+        _state["initial_balance"] = 10000.0  # Always use true starting capital for P&L
         _state["peak_value"] = initial_balance
         _state["equity_curve"] = [initial_balance]
         _state["trade_count"] = 0
