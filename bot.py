@@ -52,6 +52,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
+# Silence noisy libraries — only show errors, not every HTTP request
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 
 class LatencyArbBot:
     """Polymarket latency arbitrage bot — the 0x8dxd strategy."""
