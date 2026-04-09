@@ -66,15 +66,13 @@ class KalshiClient:
             logger.warning("Kalshi API credentials not configured — paper mode only")
             return
         try:
-            from pykalshi import HttpClient
-            with open(self._private_key_path, "r") as f:
-                private_key = f.read()
-            self._client = HttpClient(
-                key_id=self._api_key_id,
-                private_key=private_key,
-                base_url=self._base_url,
+            from pykalshi import KalshiClient as PyKalshiClient
+            self._client = PyKalshiClient(
+                api_key_id=self._api_key_id,
+                private_key_path=self._private_key_path,
+                demo=self._use_demo,
             )
-            logger.info("Kalshi API authenticated")
+            logger.info("Kalshi API authenticated (demo=%s)", self._use_demo)
         except ImportError:
             logger.warning("pykalshi not installed, paper mode only")
         except Exception as exc:
