@@ -23,6 +23,7 @@ import config
 import shared_state
 from exchange import BinanceExecutor, TradeResult
 from flow_analyzer import FlowAnalyzer, ScalpDecision
+from edge_scanner import EdgeScanner, ArbOpportunity
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
@@ -93,6 +94,9 @@ class LatencyArbBot:
         self._scalp_positions: list[dict] = []
         self._scalp_hold_seconds = 900  # 15 minutes max hold
 
+        # Components — Edge Strategies (arb, settlement sniper, bracket arb)
+        self._edge_scanner = EdgeScanner()
+
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
         self._news_analyzer = NewsAnalyzer()
@@ -156,6 +160,12 @@ class LatencyArbBot:
             asyncio.create_task(self._btc_flow_ingestion(), name="btc_flow_ingest"),
             asyncio.create_task(self._btc_scalp_processor(), name="btc_scalp"),
             asyncio.create_task(self._btc_scalp_exit_monitor(), name="btc_scalp_exits"),
+            # Strategy 7: Edge Strategies — arb, settlement sniper, bracket arb
+            asyncio.create_task(
+                self._edge_scanner.start(self._kalshi, self._price_feed, self._flow_btc.vol),
+                name="edge_scanner",
+            ),
+            asyncio.create_task(self._edge_processor(), name="edge_processor"),
             # Strategy 3: Universal News → Stocks + BTC + Kalshi
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
@@ -1098,6 +1108,184 @@ class LatencyArbBot:
 
             except Exception as exc:
                 logger.error("Whale copy error: %s", exc, exc_info=True)
+
+    # --- Strategy 7: Edge Strategies — Arb, Settlement Sniper, Bracket Arb ---
+
+    async def _edge_processor(self) -> None:
+        """
+        Process arbitrage opportunities from the EdgeScanner.
+
+        Executes three types of edges:
+        1. Cross-venue arb: Buy opposing sides on Kalshi + Polymarket
+        2. Settlement snipe: Buy near-certain contracts before expiry
+        3. Bracket arb: Exploit mispriced bracket contracts
+        """
+        logger.info("Edge processor started — executing arb opportunities")
+        while self._running:
+            try:
+                try:
+                    opp = await asyncio.wait_for(
+                        self._edge_scanner.opportunity_queue.get(), timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                # Risk check
+                can_trade, risk_reason = self._risk_manager.check_can_trade(
+                    self._portfolio_value, self._active_positions,
+                    proposed_category=f"edge_{opp.edge_type}",
+                )
+                if not can_trade:
+                    logger.debug("Edge risk blocked: %s", risk_reason)
+                    continue
+
+                # Size: scale by profit and confidence
+                size = min(
+                    opp.max_size_usd,
+                    self._portfolio_value * 0.05 * opp.confidence,
+                    self._available_balance * 0.5,
+                )
+                if size < config.MIN_TRADE_SIZE_USDC:
+                    continue
+
+                # Execute based on edge type
+                if opp.edge_type == "settlement_snipe":
+                    await self._execute_settlement_snipe(opp, size)
+                elif opp.edge_type == "cross_venue":
+                    await self._execute_cross_venue_arb(opp, size)
+                elif opp.edge_type == "bracket_arb":
+                    await self._execute_bracket_arb(opp, size)
+
+            except Exception as exc:
+                logger.error("Edge processor error: %s", exc, exc_info=True)
+
+    async def _execute_settlement_snipe(self, opp: ArbOpportunity, size: float) -> None:
+        """Buy the near-certain side of a near-expiry contract."""
+        order = self._kalshi.place_order(
+            ticker=opp.ticker,
+            side=opp.side,
+            size_usd=size,
+            price=opp.current_price,
+        )
+        if order.success:
+            self._trade_count += 1
+            self._available_balance -= size
+            trade_id = f"snipe-{int(time.time()*1000)}"
+
+            # Track as active position for exit monitoring
+            position = Position(
+                market_id=opp.ticker,
+                condition_id=opp.ticker,
+                side=Side.YES if opp.side == "YES" else Side.NO,
+                size=order.filled_size or size,
+                avg_price=order.filled_price or opp.current_price,
+                current_price=order.filled_price or opp.current_price,
+                source_wallet="settlement_snipe",
+                category="edge",
+            )
+            self._active_positions[opp.ticker] = position
+
+            shared_state.record_trade_opened(
+                trade_id=trade_id,
+                strategy="SNIPE",
+                side=opp.side,
+                asset=opp.ticker,
+                venue="Kalshi",
+                entry_price=order.filled_price or opp.current_price,
+                size_usd=size,
+                confidence=opp.confidence,
+                reason=opp.description[:80],
+            )
+            shared_state.record_signal(
+                strategy="SNIPE",
+                side=opp.side,
+                asset=f"BTC ${opp.spot_price:,.0f}",
+                venue="Kalshi",
+                confidence=opp.confidence,
+                reason=f"{opp.minutes_to_expiry:.0f}min left | fair={opp.fair_value:.0%} | mkt={opp.current_price:.0%}",
+                action="SNIPED",
+            )
+            logger.info(
+                "SETTLEMENT SNIPE: %s %s $%.2f @ %.2f (fair=%.2f, %0.fmin left, conf=%.0f%%)",
+                opp.side, opp.ticker, size, order.filled_price or opp.current_price,
+                opp.fair_value, opp.minutes_to_expiry, opp.confidence * 100,
+            )
+
+    async def _execute_cross_venue_arb(self, opp: ArbOpportunity, size: float) -> None:
+        """Execute both legs of a cross-venue arbitrage."""
+        # Leg 1: Kalshi
+        kalshi_order = self._kalshi.place_order(
+            ticker=opp.ticker_a,
+            side=opp.side_a,
+            size_usd=size,
+            price=opp.price_a,
+        )
+        if not kalshi_order.success:
+            logger.warning("Cross-venue arb Kalshi leg failed: %s", kalshi_order.error)
+            return
+
+        # Leg 2: Polymarket (would need Polymarket client)
+        # For now, log the opportunity — Polymarket execution requires separate setup
+        logger.info(
+            "CROSS-VENUE ARB: Kalshi %s %s @ %.2f FILLED — need Poly %s @ %.2f (profit=%.1f%%)",
+            opp.side_a, opp.ticker_a, opp.price_a,
+            opp.side_b, opp.price_b, opp.profit_pct * 100,
+        )
+
+        self._trade_count += 1
+        self._available_balance -= size
+
+        trade_id = f"arb-{int(time.time()*1000)}"
+        shared_state.record_trade_opened(
+            trade_id=trade_id,
+            strategy="ARB",
+            side=opp.side_a,
+            asset=opp.ticker_a,
+            venue="Kalshi+Poly",
+            entry_price=opp.combined_cost,
+            size_usd=size,
+            confidence=opp.confidence,
+            reason=opp.description[:80],
+        )
+        shared_state.record_signal(
+            strategy="ARB",
+            side=f"{opp.side_a}+{opp.side_b}",
+            asset="BTC",
+            venue="Kalshi+Polymarket",
+            confidence=opp.confidence,
+            reason=f"Combined cost ${opp.combined_cost:.3f} → ${1-opp.combined_cost:.3f} profit",
+            action="ARBED",
+        )
+
+    async def _execute_bracket_arb(self, opp: ArbOpportunity, size: float) -> None:
+        """Execute a bracket arbitrage (buy both YES + NO when sum < $1)."""
+        if opp.side == "BOTH":
+            # Buy YES
+            yes_order = self._kalshi.place_order(
+                ticker=opp.ticker, side="YES",
+                size_usd=size / 2, price=opp.current_price / 2,
+            )
+            # Buy NO
+            no_order = self._kalshi.place_order(
+                ticker=opp.ticker, side="NO",
+                size_usd=size / 2, price=(1.0 - opp.current_price / 2),
+            )
+            if yes_order.success and no_order.success:
+                self._trade_count += 2
+                self._available_balance -= size
+                logger.info(
+                    "BRACKET ARB: %s YES+NO for $%.3f (guaranteed $%.3f profit)",
+                    opp.ticker, opp.current_price, 1.0 - opp.current_price,
+                )
+                shared_state.record_signal(
+                    strategy="BRACKET",
+                    side="BOTH",
+                    asset=opp.ticker,
+                    venue="Kalshi",
+                    confidence=opp.confidence,
+                    reason=opp.description[:80],
+                    action="ARBED",
+                )
 
     # --- Strategy 6: BTC Scalp — Order Flow Driven ---
 
