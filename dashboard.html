@@ -585,6 +585,8 @@ async function loadBotState(){
     const age=(Date.now()/1000)-(state.last_updated||0);
     if(age>300)return;
     botConnected=true;
+    const cb=document.getElementById('conn-badge');
+    if(cb){cb.textContent='BOT CONNECTED';cb.style.background='rgba(34,197,94,.15)';cb.style.color='var(--green)';cb.style.borderColor='rgba(34,197,94,.4)';}
     totalPnl=(state.portfolio_value||10000)-(state.initial_balance||10000);
     todayPnl=totalPnl;tradeCount=state.trade_count||0;winCount=state.win_count||0;
     portfolio=state.portfolio_value||10000;
