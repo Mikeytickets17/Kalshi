@@ -204,8 +204,11 @@ async function pollBotState(){
   }
 }
 // Poll bot state every 3 seconds
-setInterval(pollBotState,3000);
-pollBotState();
+// Only poll Flask backend if running on localhost (not GitHub Pages)
+if(location.hostname==='localhost'||location.hostname==='127.0.0.1'){
+  setInterval(pollBotState,3000);
+  pollBotState();
+}
 
 // ── Trade lifecycle: positions open ONLY from real signals, close after hold time ──
 // When bot is running: trades come from the Python backend via /api/state
