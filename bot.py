@@ -386,18 +386,14 @@ class LatencyArbBot:
         if self._paper_mode:
             age = time.time() - position.entry_time
             if age > random.uniform(300, 900):
-                # Simulate win/loss: lower entry price = more edge = higher win rate
-                # Buying YES at 0.40 has more upside than at 0.90
-                edge_factor = 1.0 - position.avg_price  # higher when entry is lower
+                edge_factor = 1.0 - position.avg_price
                 win_prob = min(0.60 + edge_factor * 0.35, 0.95)
                 if random.random() < win_prob:
-                    # Won: contract resolves at $1.00
                     if position.side == Side.YES:
                         position.current_price = 0.99
                     else:
                         position.current_price = 0.99
                 else:
-                    # Lost: contract resolves at $0
                     if position.side == Side.YES:
                         position.current_price = 0.01
                     else:
@@ -405,7 +401,25 @@ class LatencyArbBot:
                 return True, "Contract resolved"
             return False, ""
 
-        # Live: check risk manager conditions
+        # --- LIVE MODE ---
+
+        # 1. Check if the Kalshi contract has settled
+        is_settled, result = self._kalshi.check_settlement(position.market_id)
+        if is_settled:
+            if result == "yes":
+                position.current_price = 0.99
+            elif result == "no":
+                position.current_price = 0.01
+            else:
+                position.current_price = 0.50
+            return True, f"Contract settled: {result}"
+
+        # 2. Update position with live Kalshi price
+        live_price = self._kalshi.get_market_price(position.market_id)
+        if live_price is not None:
+            position.current_price = live_price
+
+        # 3. Check risk manager conditions (stop loss, drawdown, etc.)
         should_exit, reason = self._risk_manager.check_exit_conditions(
             position, self._portfolio_value
         )

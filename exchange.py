@@ -143,14 +143,25 @@ class BinanceExecutor:
             )
 
     def _paper_fill(self, side: str, symbol: str, asset: str, usdc_amount: float, start: float) -> TradeResult:
-        """Simulate a fill in paper mode."""
-        # Use a realistic simulated price
-        from price_feed import PriceFeed
+        """Simulate a fill in paper mode using real prices when available."""
         import random
 
-        # Rough price simulation
-        prices = {"BTC": 68500, "ETH": 3450}
-        price = prices.get(asset, 50000) + random.gauss(0, prices.get(asset, 50000) * 0.001)
+        # Try to get real price from Binance ticker API (free, no key needed)
+        price = None
+        try:
+            ticker = self._http.get(
+                f"{self.BASE_URL}/api/v3/ticker/price",
+                params={"symbol": symbol},
+            )
+            if ticker.status_code == 200:
+                price = float(ticker.json()["price"])
+        except Exception:
+            pass
+
+        # Fallback to rough estimate if API call fails
+        if price is None:
+            fallback = {"BTC": 72000, "ETH": 1800}
+            price = fallback.get(asset, 50000) + random.gauss(0, fallback.get(asset, 50000) * 0.001)
 
         slippage = 0.001  # 0.1% slippage on market order
         if side == "BUY":

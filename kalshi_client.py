@@ -208,6 +208,51 @@ class KalshiClient:
             logger.error("Kalshi order failed: %s", exc)
             return KalshiOrder(success=False, error=str(exc))
 
+    def get_market(self, ticker: str) -> Optional[dict]:
+        """Fetch current state of a specific market by ticker."""
+        if not self._client:
+            return None
+        try:
+            resp = self._client.get_market(ticker)
+            return resp.get("market", resp)
+        except Exception as exc:
+            logger.error("Failed to get market %s: %s", ticker, exc)
+            return None
+
+    def get_market_price(self, ticker: str) -> Optional[float]:
+        """Get the current YES price for a market."""
+        market = self.get_market(ticker)
+        if not market:
+            return None
+        yes_ask = market.get("yes_ask")
+        yes_price = yes_ask if yes_ask is not None else market.get("last_price")
+        if yes_price is None:
+            return None
+        if isinstance(yes_price, (int, float)) and yes_price > 1:
+            yes_price = yes_price / 100.0
+        return round(float(yes_price), 4)
+
+    def check_settlement(self, ticker: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if a Kalshi contract has settled.
+
+        Returns:
+            (is_settled, result) where result is "yes", "no", or None if not settled.
+        """
+        market = self.get_market(ticker)
+        if not market:
+            return False, None
+
+        status = market.get("status", "")
+        result = market.get("result", "")
+
+        if status in ("settled", "finalized", "closed") and result:
+            return True, result.lower()
+        if result and result.lower() in ("yes", "no"):
+            return True, result.lower()
+
+        return False, None
+
     def cancel_all(self) -> None:
         if self._paper_mode:
             logger.info("[PAPER] Cancelled all Kalshi orders")
