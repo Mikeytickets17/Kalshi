@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multi-Strategy Trading Bot — v4.7</title>
+<title>Multi-Strategy Trading Bot — v5.1</title>
 <style>
 :root{--bg:#060a13;--card:#0d1321;--border:#1a2235;--text:#e2e8f0;--muted:#546484;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;--cyan:#06b6d4}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -17,6 +17,7 @@ body{font-family:'SF Mono','JetBrains Mono','Fira Code',monospace;background:var
 .badge{padding:2px 8px;border-radius:10px;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
 .b1{background:rgba(34,197,94,.1);color:var(--green);border:1px solid rgba(34,197,94,.25)}
 .b2{background:rgba(245,158,11,.1);color:var(--amber);border:1px solid rgba(245,158,11,.25)}
+.b3{background:rgba(168,85,247,.1);color:var(--purple);border:1px solid rgba(168,85,247,.25)}
 .pulse{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:p 2s infinite;margin-right:4px}
 @keyframes p{0%,100%{opacity:1;box-shadow:0 0 6px var(--green)}50%{opacity:.3}}
 .wrap{max-width:1440px;margin:0 auto;padding:12px}
@@ -40,16 +41,15 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 .t-sell{background:rgba(239,68,68,.1);color:var(--red)}
 .t-arb{background:rgba(168,85,247,.1);color:var(--purple)}
 .t-trump{background:rgba(245,158,11,.1);color:var(--amber)}
-.t-news{background:rgba(6,182,212,.1);color:var(--cyan)}
+.t-snipe{background:rgba(34,197,94,.15);color:var(--green)}
+.t-btc15{background:rgba(59,130,246,.1);color:var(--blue)}
+.t-whale{background:rgba(6,182,212,.1);color:var(--cyan)}
+.t-news{background:rgba(100,116,139,.12);color:var(--muted)}
 .t-crit{background:rgba(239,68,68,.12);color:var(--red)}
 .t-high{background:rgba(245,158,11,.12);color:var(--amber)}
-.t-news{background:rgba(100,116,139,.12);color:var(--muted)}
 .pos{color:var(--green)}.neg{color:var(--red)}
 .tbox{background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.15);border-radius:6px;padding:10px;margin:6px 0}
 .tbox q{font-style:italic;line-height:1.5;display:block;margin-bottom:6px}
-.cex{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid rgba(26,34,53,.3)}
-.cex b{width:35px}.cex .p{font-size:15px;font-weight:700;width:120px}
-.cex small{color:var(--muted);font-size:9px}
 .chart{height:120px;display:flex;align-items:flex-end;gap:1px}.chart div{flex:1;border-radius:2px 2px 0 0;min-width:1px}
 .rbar{height:4px;background:var(--border);border-radius:2px;margin-top:3px}.rfill{height:100%;border-radius:2px}
 .rok{background:var(--green)}.rwarn{background:var(--amber)}.rdng{background:var(--red)}
@@ -58,16 +58,19 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 .perf-r{display:flex;gap:14px}.perf-v{font-size:18px;font-weight:700}.perf-l{font-size:8px;color:var(--muted)}
 .footer{text-align:center;padding:12px;font-size:8px;color:var(--muted);border-top:1px solid var(--border);margin-top:12px}
 .live-dot{color:var(--green);font-size:9px}
+#bot-status{padding:3px 10px;border-radius:12px;font-size:9px;font-weight:700}
+.bot-live{background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.4)}
+.bot-offline{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
 </style>
 </head>
 <body>
 <div class="hdr">
-<div style="display:flex;align-items:center;gap:8px"><h1>MULTI-STRATEGY TRADING BOT</h1><span style="font-size:10px;color:var(--muted)">Kalshi + Binance + Alpaca</span></div>
+<div style="display:flex;align-items:center;gap:8px"><h1>KALSHI TRADING SYSTEM</h1><span id="bot-status" class="bot-offline">SCANNING</span></div>
 <div style="display:flex;align-items:center;gap:16px">
-<div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div><div id="pnl-value" style="font-size:20px;font-weight:700">$0.00</div></div>
+<div id="pnl-banner" style="text-align:right"><div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Portfolio</div><div id="pnl-value" style="font-size:20px;font-weight:700">$10,000.00</div></div>
 <div class="badges">
-<span class="badge b1">LIVE DATA</span>
-<span class="badge b2">4 STRATEGIES</span>
+<span class="badge b1">LIVE</span>
+<span class="badge b3">7 STRATEGIES</span>
 <span style="font-size:9px;color:var(--muted)"><span class="pulse"></span><span id="clock">--:--:--</span></span>
 </div>
 </div>
@@ -75,550 +78,88 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="wrap">
 <div class="row r6" id="stats"></div>
 <div class="row r2">
-<div class="card"><div class="card-h"><span>Total P&L Tracker</span><span class="live-dot"><span class="pulse"></span>Live</span></div><div class="card-b"><div style="text-align:center;padding:16px 0"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Cumulative Profit & Loss</div><div id="big-pnl" style="font-size:48px;font-weight:700;margin:8px 0">$0.00</div><div id="big-pnl-sub" style="font-size:12px">0 trades | 0% win rate</div></div><div id="pnl-chart" class="chart" style="height:80px;margin-top:8px"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-top:2px"><span>Session start</span><span>Now</span></div></div></div>
-<div class="card"><div class="card-h"><span>Closed Positions</span><div style="display:flex;gap:16px;align-items:center"><span style="font-size:9px;color:var(--muted)" id="closed-count">0 trades</span><span style="font-size:13px;font-weight:700" id="closed-pnl-total">$0.00</span></div></div><div style="overflow-x:auto;max-height:320px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Running Total</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
+<div class="card"><div class="card-h"><span>P&L Curve</span><span class="live-dot"><span class="pulse"></span>Live</span></div><div class="card-b"><div style="text-align:center;padding:12px 0"><div id="big-pnl" style="font-size:42px;font-weight:700;margin:4px 0">$0.00</div><div id="big-pnl-sub" style="font-size:11px">0 trades | 0% win rate</div></div><div id="pnl-chart" class="chart" style="height:80px;margin-top:8px"></div></div></div>
+<div class="card"><div class="card-h"><span>Closed Trades</span><div style="display:flex;gap:16px;align-items:center"><span style="font-size:9px;color:var(--muted)" id="closed-count">0 trades</span><span style="font-size:13px;font-weight:700" id="closed-pnl-total">$0.00</span></div></div><div style="overflow-x:auto;max-height:320px;overflow-y:auto"><table><thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead><tbody id="closed-table"></tbody></table></div></div>
 </div>
-<div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions — Currently Open</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>Unrealized P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
-<div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live News Feed</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="news" style="max-height:280px;overflow-y:auto"></div></div>
-<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Truth Social Monitor</span><span class="live-dot"><span class="pulse"></span>Polling every 3s</span></div><div class="card-b" id="trump"></div></div>
-<div class="row r2">
-<div class="card"><div class="card-h"><span>Risk Management</span><span class="badge b1" style="font-size:7px">ACTIVE</span></div><div class="card-b" id="risk"></div></div>
-<div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span>Active Positions</span><span class="live-dot"><span class="pulse"></span><span id="active-count">0 open</span></span></div><div style="overflow-x:auto"><table><thead><tr><th>Opened</th><th>Strategy</th><th>Side</th><th>Asset</th><th>Venue</th><th>Entry</th><th>Size</th><th>P&L</th><th>Age</th></tr></thead><tbody id="active-table"></tbody></table></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span>Live Signals</span><span class="live-dot"><span class="pulse"></span>Scanning</span></div><div class="card-b" id="signals" style="max-height:200px;overflow-y:auto"></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span>News Feed</span><span class="live-dot"><span class="pulse"></span>24 sources</span></div><div class="card-b" id="news" style="max-height:200px;overflow-y:auto"></div></div>
+<div class="card" style="margin-bottom:10px"><div class="card-h"><span style="color:var(--amber)">Trump Monitor</span><span class="live-dot"><span class="pulse"></span>8 sources</span></div><div class="card-b" id="trump"></div></div>
 </div>
-</div>
-<div class="footer">Multi-Strategy Trading Bot v4.7 — Real-Time Data — All US Legal from NJ — Build: 20260407-2</div>
-
+<div class="footer">Kalshi Trading System v5.1 — 7 Strategies — Settlement Sniper + Flow Analyzer + Edge Scanner</div>
+<script src="load_bot_state.js"></script>
 <script>
-// ═══════════════════════════════════════════════════
-// REAL-TIME DATA SOURCES
-// ═══════════════════════════════════════════════════
-
-let btcPrice=0,ethPrice=0,btcPrev=0,ethPrev=0;
-let btcHistory=[];
-let signals=[];
-let newsItems=[];
+let btcPrice=0,ethPrice=0,btcHistory=[];
+let signals=[],newsItems=[],closedTrades=[],activePositions=[],pnlHistory=[];
 let tradeCount=0,winCount=0,totalPnl=0,todayPnl=0;
-let priceSource='loading';
-var portfolio=10000;
-let closedTrades=[];
-let pnlHistory=[];
-let activePositions=[];
-let posCounter=0;
+let priceSource='loading',portfolio=10000;
+let currentTrump={text:'Waiting for posts...',dir:'NEUTRAL',conf:0,move:0,topics:[]};
+let botConnected=false;
 
-// ── PERSISTENCE: save all data to localStorage so refresh doesn't lose it ──
-function saveState(){
-  try{
-    localStorage.setItem('bot_state',JSON.stringify({
-      closedTrades,activePositions,totalPnl,todayPnl,tradeCount,winCount,pnlHistory,posCounter,
-      savedAt:Date.now()
-    }));
-  }catch(e){}
-}
-function loadState(){
-  try{
-    const raw=localStorage.getItem('bot_state');
-    if(!raw)return false;
-    const s=JSON.parse(raw);
-    // Only restore if saved less than 24 hours ago
-    if(Date.now()-s.savedAt>86400000){localStorage.removeItem('bot_state');return false;}
-    closedTrades=s.closedTrades||[];
-    activePositions=(s.activePositions||[]).map(p=>{p.openedAt=p.openedAt||Date.now();return p;});
-    totalPnl=s.totalPnl||0;
-    todayPnl=s.todayPnl||0;
-    tradeCount=s.tradeCount||0;
-    winCount=s.winCount||0;
-    pnlHistory=s.pnlHistory||[];
-    posCounter=s.posCounter||0;
-    return true;
-  }catch(e){return false;}
-}
-const restored=loadState();
-if(restored){console.log('Restored state:',closedTrades.length,'closed,',activePositions.length,'active, P&L:',totalPnl.toFixed(2));}
-else{console.log('Fresh session — starting from zero');}
+// Persistence
+function saveState(){try{localStorage.setItem('bot_v51',JSON.stringify({closedTrades,totalPnl,todayPnl,tradeCount,winCount,pnlHistory,savedAt:Date.now()}));}catch(e){}}
+function loadState(){try{const r=localStorage.getItem('bot_v51');if(!r)return;const s=JSON.parse(r);if(Date.now()-s.savedAt>86400000)return;closedTrades=s.closedTrades||[];totalPnl=s.totalPnl||0;todayPnl=s.todayPnl||0;tradeCount=s.tradeCount||0;winCount=s.winCount||0;pnlHistory=s.pnlHistory||[];}catch(e){}}
+loadState();
+setInterval(saveState,5000);
 
-// Save state every 3 seconds
-setInterval(saveState,3000);
+// Price feeds
+async function fetchPrice(){try{
+const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
+if(r.ok){const d=await r.json();btcPrice=d.bitcoin.usd;ethPrice=d.ethereum.usd;btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();priceSource='CoinGecko';}
+}catch(e){try{const r2=await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD');if(r2.ok){const d=await r2.json();btcPrice=d.BTC.USD;ethPrice=d.ETH.USD;priceSource='CryptoCompare';}}catch(e2){}}}
+fetchPrice();setInterval(fetchPrice,8000);
 
-// ── Trade lifecycle: positions open from signals, close on timer ──
-function newRandomPos(){
-  const opts=[
-    {strat:'ARB',side:Math.random()>0.5?'YES':'NO',asset:'BTC-UP-'+(83000+Math.round(Math.random()*1000)),venue:'Kalshi',entry:(0.4+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*300)},
-    {strat:'ARB',side:Math.random()>0.5?'YES':'NO',asset:'ETH-UP-'+(1750+Math.round(Math.random()*100)),venue:'Kalshi',entry:(0.4+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*200)},
-    {strat:'TRUMP',side:'BUY',asset:'BTC SPOT',venue:'Binance',entry:'$'+(83000+Math.round(Math.random()*1000)),size:Math.round(300+Math.random()*400)},
-    {strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',entry:(0.2+Math.random()*0.2).toFixed(2),size:Math.round(200+Math.random()*200)},
-    {strat:'NEWS',side:Math.random()>0.5?'BUY':'SELL',asset:['SPY','QQQ','NVDA','TSLA','AAPL'][Math.floor(Math.random()*5)],venue:'Alpaca',entry:'$'+(100+Math.round(Math.random()*500)),size:Math.round(200+Math.random()*300)},
-    {strat:'NEWS',side:'LONG',asset:'BTC 3x',venue:'Binance',entry:'$'+(83000+Math.round(Math.random()*1000)),size:Math.round(400+Math.random()*300)},
-    {strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:(0.3+Math.random()*0.3).toFixed(2),size:Math.round(200+Math.random()*200)},
-  ];
-  return opts[Math.floor(Math.random()*opts.length)];
-}
-setInterval(()=>{
-  // Close oldest active position → moves to closed trades
-  if(activePositions.length>0){
-    const p=activePositions.shift();
-    const won=Math.random()<0.82;
-    const pnl=won?(p.size*Math.random()*0.08):(-p.size*Math.random()*0.04);
-    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-    tradeCount++;if(won)winCount++;
-    closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:p.strat,side:p.side,asset:p.asset,venue:p.venue,size:'$'+p.size,pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>100)closedTrades.pop();
-  }
-  // Open new position → appears in active positions
-  const np=newRandomPos();posCounter++;
-  activePositions.push({id:'p'+posCounter,time:new Date().toLocaleTimeString(),strat:np.strat,side:np.side,asset:np.asset,venue:np.venue,entry:np.entry,size:np.size,unrealizedPnl:0,openedAt:Date.now()});
-},7000);
-
-// ── PRICE FEEDS: try multiple sources, first one that works wins ──
-
-// Source 1: Binance WebSocket (fastest — streams every trade)
-function tryBinanceWS(){
-  try{
-    const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade/ethusdt@trade');
-    const timeout=setTimeout(()=>{ws.close()},5000); // give up after 5s
-    ws.onopen=()=>{clearTimeout(timeout);priceSource='Binance WebSocket (streaming)';};
-    ws.onmessage=(e)=>{
-      const d=JSON.parse(e.data);
-      const p=parseFloat(d.p);
-      if(d.s==='BTCUSDT'){btcPrev=btcPrice;btcPrice=p;btcHistory.push(p);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',p);}
-      if(d.s==='ETHUSDT'){ethPrev=ethPrice;ethPrice=p;checkArbSignal('ETH',p);}
-    };
-    ws.onclose=()=>{if(priceSource.includes('WebSocket')){priceSource='reconnecting';setTimeout(tryBinanceWS,5000);}};
-    ws.onerror=()=>{clearTimeout(timeout);ws.close();if(!btcPrice)tryBinanceREST();};
-  }catch(e){tryBinanceREST();}
-}
-
-// Source 2: Binance REST API (works if CORS allows)
-async function tryBinanceREST(){
-  try{
-    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
-    if(!r.ok)throw new Error(r.status);
-    const d=await r.json();
-    d.forEach(t=>{
-      if(t.symbol==='BTCUSDT'){btcPrev=btcPrice||parseFloat(t.price);btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);}
-      if(t.symbol==='ETHUSDT'){ethPrev=ethPrice||parseFloat(t.price);ethPrice=parseFloat(t.price);}
-    });
-    priceSource='Binance REST (polling 3s)';
-    render();
-    setInterval(async()=>{
-      try{
-        const r2=await fetch('https://api.binance.com/api/v3/ticker/price?symbols=["BTCUSDT","ETHUSDT"]');
-        const d2=await r2.json();
-        d2.forEach(t=>{
-          if(t.symbol==='BTCUSDT'){btcPrev=btcPrice;btcPrice=parseFloat(t.price);btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();checkArbSignal('BTC',btcPrice);}
-          if(t.symbol==='ETHUSDT'){ethPrev=ethPrice;ethPrice=parseFloat(t.price);checkArbSignal('ETH',ethPrice);}
-        });
-      }catch(e){}
-    },3000);
-  }catch(e){tryCoinGecko();}
-}
-
-// Source 3: CoinGecko (free, CORS-friendly, but slower)
-async function tryCoinGecko(){
-  try{
-    const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true');
-    if(!r.ok)throw new Error(r.status);
-    const d=await r.json();
-    btcPrev=btcPrice||d.bitcoin.usd;btcPrice=d.bitcoin.usd;btcHistory.push(btcPrice);
-    ethPrev=ethPrice||d.ethereum.usd;ethPrice=d.ethereum.usd;
-    priceSource='CoinGecko API (polling 10s)';
-    render();
-    setInterval(async()=>{
-      try{
-        const r2=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
-        const d2=await r2.json();
-        btcPrev=btcPrice;btcPrice=d2.bitcoin.usd;btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();
-        ethPrev=ethPrice;ethPrice=d2.ethereum.usd;
-        checkArbSignal('BTC',btcPrice);checkArbSignal('ETH',ethPrice);
-      }catch(e){}
-    },10000);
-  }catch(e){tryCryptoCompare();}
-}
-
-// Source 4: CryptoCompare (another CORS-friendly fallback)
-async function tryCryptoCompare(){
-  try{
-    const r=await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD');
-    if(!r.ok)throw new Error(r.status);
-    const d=await r.json();
-    btcPrev=btcPrice||d.BTC.USD;btcPrice=d.BTC.USD;btcHistory.push(btcPrice);
-    ethPrev=ethPrice||d.ETH.USD;ethPrice=d.ETH.USD;
-    priceSource='CryptoCompare API (polling 5s)';
-    render();
-    setInterval(async()=>{
-      try{
-        const r2=await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD');
-        const d2=await r2.json();
-        btcPrev=btcPrice;btcPrice=d2.BTC.USD;btcHistory.push(btcPrice);if(btcHistory.length>200)btcHistory.shift();
-        ethPrev=ethPrice;ethPrice=d2.ETH.USD;
-        checkArbSignal('BTC',btcPrice);checkArbSignal('ETH',ethPrice);
-      }catch(e){}
-    },5000);
-  }catch(e){
-    // All sources failed — use last known or placeholder
-    priceSource='Offline (cached)';
-    btcPrice=btcPrice||83500;ethPrice=ethPrice||1800;
-    btcHistory.push(btcPrice);
-    render();
-  }
-}
-
-// ── LIVE NEWS from every source that works in a browser ──
-async function fetchNews(){
-  let loaded=0;
-
-  // Source 1: CryptoCompare news API (free, CORS-friendly, crypto focused)
-  try{
-    const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
-    if(r.ok){
-      const d=await r.json();
-      (d.Data||[]).slice(0,8).forEach(item=>{
-        const h=item.title;
-        if(!newsItems.find(n=>n.text===h)){
-          const pri=classifyNews(h);
-          newsItems.unshift({time:new Date(item.published_on*1000).toLocaleTimeString(),text:h,source:item.source||'Crypto',pri:pri.pri,col:pri.col});
-          loaded++;
-        }
-      });
-    }
-  }catch(e){}
-
-  // Source 2: RSS feeds via rss2json
-  const feeds=[
-    {name:'CNBC',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Fsearch.cnbc.com%2Frs%2Fsearch%2Fcombinedcms%2Fview.xml%3FpartnerId%3Dwrss01%26id%3D100003114'},
-    {name:'Reuters',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.reuters.com%2Freuters%2FtopNews'},
-    {name:'MarketWatch',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.marketwatch.com%2Fmarketwatch%2Ftopstories'},
-    {name:'BBC Biz',url:'https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ffeeds.bbci.co.uk%2Fnews%2Fbusiness%2Frss.xml'},
-  ];
-  for(const feed of feeds){
-    try{
-      const r=await fetch(feed.url);
-      const d=await r.json();
-      if(d.items){
-        d.items.slice(0,5).forEach(item=>{
-          const h=item.title;
-          if(!newsItems.find(n=>n.text===h)){
-            const pri=classifyNews(h);
-            if(pri){
-              newsItems.unshift({time:new Date().toLocaleTimeString(),text:h,source:feed.name,pri:pri.pri,col:pri.col});
-              if(newsItems.length>15)newsItems.pop();
-              if(pri.pri==='CRIT'||pri.pri==='HIGH')generateNewsSignal(h,pri);
-            }
-          }
-        });
-      }
-    }catch(e){}
-  }
-
-  // Source 3: CoinGecko trending/news (market movers)
-  try{
-    const r=await fetch('https://api.coingecko.com/api/v3/search/trending');
-    if(r.ok){
-      const d=await r.json();
-      (d.coins||[]).slice(0,3).forEach(c=>{
-        const h='Trending: '+c.item.name+' ('+c.item.symbol+') — rank #'+c.item.market_cap_rank;
-        if(!newsItems.find(n=>n.text===h)){
-          newsItems.unshift({time:new Date().toLocaleTimeString(),text:h,source:'CoinGecko',pri:'NEWS',col:'var(--cyan)'});
-          loaded++;
-        }
-      });
-    }
-  }catch(e){}
-
-  // Source 4: Fear & Greed Index
-  try{
-    const r=await fetch('https://api.alternative.me/fng/?limit=1');
-    if(r.ok){
-      const d=await r.json();
-      const fg=d.data[0];
-      const h='Crypto Fear & Greed Index: '+fg.value+' ('+fg.value_classification+')';
-      if(!newsItems.find(n=>n.text===h)){
-        const col=parseInt(fg.value)>60?'var(--green)':parseInt(fg.value)<40?'var(--red)':'var(--amber)';
-        newsItems.unshift({time:new Date().toLocaleTimeString(),text:h,source:'Alt.me',pri:'HIGH',col:col});
-        loaded++;
-      }
-    }
-  }catch(e){}
-
-  // Keep max items, generate signals from critical news
-  if(newsItems.length>30)newsItems.length=30;
-  newsItems.forEach(n=>{if(n.pri==='CRIT'&&!n._signaled){n._signaled=true;generateNewsSignal(n.text,n);}});
-
-  console.log('News loaded:',loaded,'items from all sources');
-  render();
-  setTimeout(fetchNews,20000); // refresh every 20 seconds
-}
-
-function classifyNews(h){
-  const t=h.toLowerCase();
-  const crit=['federal reserve','rate cut','rate hike','tariff','cpi','inflation','bitcoin','crypto','recession','executive order','nonfarm'];
-  const high=['breaking','earnings','stock','market','trump','china','oil','jobs','treasury','s&p','trade','economy','gdp','fed','bank','dollar'];
-  if(crit.some(k=>t.includes(k)))return{pri:'CRIT',col:t.includes('cut')||t.includes('bitcoin')||t.includes('surge')||t.includes('rise')?'var(--green)':'var(--red)'};
-  if(high.some(k=>t.includes(k)))return{pri:'HIGH',col:t.includes('beat')||t.includes('surge')||t.includes('high')||t.includes('rally')||t.includes('rise')||t.includes('gain')?'var(--green)':'var(--amber)'};
-  // Show ALL news, even low priority
-  return{pri:'NEWS',col:'var(--muted)'};
-}
-
-// ── TRADE SIGNAL GENERATION (runs on live data) ──
-
-let lastArbSignal=0;
-function checkArbSignal(asset,price){
-  if(Date.now()-lastArbSignal<5000)return; // max 1 signal per 5s
-  // Simulate Kalshi contract that lags behind Binance
-  const lag=Math.random()*0.003; // 0-0.3% lag
-  const contractPrice=price*(1-lag*(Math.random()>0.5?1:-1));
-  const edge=Math.abs(price-contractPrice)/price;
-  if(edge>0.002){ // >0.2% divergence in real-time
-    const side=price>contractPrice?'YES':'NO';
-    const conf=Math.min(edge*20,0.95);
-    const size=Math.min(300,portfolio*0.03);
-    const won=Math.random()<0.9;
-    const pnl=won?(edge*size):(edge*size*-3);
-    // Open position first, close after hold time
-    const posId='arb-'+Date.now();
-    activePositions.push({id:posId,time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',entry:contractPrice.toFixed(2),size:size,unrealizedPnl:0,openedAt:Date.now()});
-    // Schedule close after 15-60 seconds (simulating contract resolution)
-    setTimeout(()=>{
-      const idx=activePositions.findIndex(p=>p.id===posId);
-      if(idx>=0)activePositions.splice(idx,1);
-      totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-      tradeCount++;if(won)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'ARB',side:side,asset:asset+'-UP-'+Math.round(contractPrice),venue:'Kalshi',size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
-    },Math.random()*45000+15000);
-    signals.unshift({
-      time:new Date().toLocaleTimeString(),
-      strat:'ARB',side:side,
-      asset:asset+'-UP-'+Math.round(contractPrice),
-      venue:'Kalshi',
-      reason:'CEX $'+price.toFixed(0)+' vs contract $'+contractPrice.toFixed(0)+' ('+((edge)*100).toFixed(2)+'% edge)',
-      conf:conf,
-      pnl:pnl,
-      size:size,
-      entryPrice:price
-    });
-    if(signals.length>20)signals.pop();
-    lastArbSignal=Date.now();
-  }
-}
-
-function generateNewsSignal(headline,pri){
-  const t=headline.toLowerCase();
-  let actions=[];
-  if(t.includes('rate cut')||t.includes('bitcoin')||t.includes('crypto')){
-    actions.push({strat:'NEWS',side:'BUY',asset:'BTC',venue:'Binance',reason:headline.substring(0,50)+'...',conf:0.75});
-    actions.push({strat:'NEWS',side:'BUY',asset:'SPY',venue:'Alpaca',reason:'Risk-on from: '+headline.substring(0,40),conf:0.65});
-  }
-  if(t.includes('tariff')||t.includes('trade war')){
-    actions.push({strat:'NEWS',side:'SELL',asset:'BTC',venue:'Binance',reason:headline.substring(0,50)+'...',conf:0.70});
-    actions.push({strat:'NEWS',side:'SELL',asset:'SPY',venue:'Alpaca',reason:'Risk-off: '+headline.substring(0,40),conf:0.70});
-    actions.push({strat:'KALSHI',side:'YES',asset:'TARIFF-CONTRACT',venue:'Kalshi',reason:'Tariff contract match',conf:0.80});
-  }
-  if(t.includes('earnings')||t.includes('beat')){
-    actions.push({strat:'NEWS',side:'BUY',asset:'QQQ',venue:'Alpaca',reason:headline.substring(0,50),conf:0.60});
-  }
-  actions.forEach(a=>{
-    a.time=new Date().toLocaleTimeString();
-    const size=Math.min(250,portfolio*0.04);
-    const won=Math.random()<0.72;
-    const pnl=won?(size*Math.random()*0.04):(-size*Math.random()*0.02);
-    a.pnl=pnl;a.size=size;
-    signals.unshift(a);
-    tradeCount++;if(won)winCount++;
-    totalPnl+=pnl;todayPnl+=pnl;pnlHistory.push(totalPnl);
-    closedTrades.unshift({time:a.time,strat:a.strat,side:a.side,asset:a.asset,venue:a.venue,size:'$'+size.toFixed(0),pnl:pnl,result:won?'WIN':'LOSS'});
-    if(closedTrades.length>30)closedTrades.pop();
-  });
-  if(signals.length>20)signals=signals.slice(0,20);
-}
-
-// ── TRUMP MONITOR (simulated — real Truth Social needs server-side) ──
-const trumpPosts=[
-  {text:"The Federal Reserve should CUT RATES NOW. Our economy would boom like never before! Bitcoin and crypto are the future!",dir:"BULLISH",conf:0.85,move:3.2,topics:["fed","crypto"]},
-  {text:"TARIFFS on China going to 60%. They've been ripping us off for decades. This ends NOW!",dir:"BEARISH",conf:0.82,move:2.8,topics:["tariffs"]},
-  {text:"Just signed the Strategic Bitcoin Reserve executive order. America will be the CRYPTO CAPITAL of the world!",dir:"BULLISH",conf:0.92,move:5.0,topics:["crypto","executive order"]},
-  {text:"The stock market is at an ALL TIME HIGH. This is what happens when you have a President who knows business!",dir:"BULLISH",conf:0.45,move:0.5,topics:["economy"]},
-];
-let currentTrump=trumpPosts[0];
-let trumpIdx=0;
-function rotateTrump(){
-  trumpIdx=(trumpIdx+1)%trumpPosts.length;
-  currentTrump=trumpPosts[trumpIdx];
-  // Generate trades from this post
-  if(currentTrump.conf>=0.5){
-    const side=currentTrump.dir==='BULLISH'?'BUY':'SELL';
-    const btcSize=Math.min(500,portfolio*0.05);
-    const btcWon=Math.random()<0.85;
-    const btcPnl=btcWon?(btcSize*currentTrump.move/100):(-btcSize*0.015);
-    const btcPosId='trump-btc-'+Date.now();
-    activePositions.push({id:btcPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',entry:btcPrice?'$'+btcPrice.toFixed(0):'$68,500',size:btcSize,unrealizedPnl:0,openedAt:Date.now()});
-    setTimeout(()=>{
-      const idx=activePositions.findIndex(p=>p.id===btcPosId);
-      if(idx>=0)activePositions.splice(idx,1);
-      totalPnl+=btcPnl;todayPnl+=btcPnl;pnlHistory.push(totalPnl);tradeCount++;if(btcWon)winCount++;
-      closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',size:'$'+btcSize.toFixed(0),pnl:btcPnl,result:btcWon?'WIN':'LOSS'});
-      if(closedTrades.length>30)closedTrades.pop();
-    },Math.random()*60000+30000);
-    signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:side,asset:'BTC',venue:'Binance',reason:currentTrump.text.substring(0,50)+'...',conf:currentTrump.conf,pnl:btcPnl,size:btcSize});
-    if(currentTrump.topics.includes('crypto')){
-      const kSize=Math.min(300,portfolio*0.03);
-      const kWon=Math.random()<0.80;
-      const kPnl=kWon?(kSize*0.40):(-kSize*0.25);
-      const kPosId='trump-k-'+Date.now();
-      activePositions.push({id:kPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',entry:'0.27',size:kSize,unrealizedPnl:0,openedAt:Date.now()});
-      setTimeout(()=>{
-        const idx=activePositions.findIndex(p=>p.id===kPosId);
-        if(idx>=0)activePositions.splice(idx,1);
-        totalPnl+=kPnl;todayPnl+=kPnl;pnlHistory.push(totalPnl);tradeCount++;if(kWon)winCount++;
-        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',size:'$'+kSize.toFixed(0),pnl:kPnl,result:kWon?'WIN':'LOSS'});
-        if(closedTrades.length>30)closedTrades.pop();
-      },Math.random()*60000+20000);
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'BTC-RESERVE',venue:'Kalshi',reason:'Crypto contract match',conf:currentTrump.conf*0.85,pnl:kPnl,size:kSize});
-    }
-    if(currentTrump.topics.includes('tariffs')){
-      const tSize=Math.min(300,portfolio*0.03);
-      const tWon=Math.random()<0.85;
-      const tPnl=tWon?(tSize*0.50):(-tSize*0.20);
-      const tPosId='trump-t-'+Date.now();
-      activePositions.push({id:tPosId,time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',entry:'0.45',size:tSize,unrealizedPnl:0,openedAt:Date.now()});
-      setTimeout(()=>{
-        const idx=activePositions.findIndex(p=>p.id===tPosId);
-        if(idx>=0)activePositions.splice(idx,1);
-        totalPnl+=tPnl;todayPnl+=tPnl;pnlHistory.push(totalPnl);tradeCount++;if(tWon)winCount++;
-        closedTrades.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',size:'$'+tSize.toFixed(0),pnl:tPnl,result:tWon?'WIN':'LOSS'});
-        if(closedTrades.length>30)closedTrades.pop();
-      },Math.random()*60000+20000);
-      signals.unshift({time:new Date().toLocaleTimeString(),strat:'TRUMP',side:'YES',asset:'TARIFF-CHINA',venue:'Kalshi',reason:'Tariff contract match',conf:currentTrump.conf*0.9,pnl:tPnl,size:tSize});
-    }
-  }
-  if(signals.length>20)signals=signals.slice(0,20);
-}
-setInterval(rotateTrump,45000);
-
-// ═══════════════════════════════════════════════════
-// RENDER
-// ═══════════════════════════════════════════════════
+// News
+async function fetchNews(){try{
+const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
+if(r.ok){const d=await r.json();(d.Data||[]).slice(0,10).forEach(item=>{const h=item.title;if(!newsItems.find(n=>n.text===h)){const pri=h.toLowerCase().match(/bitcoin|crypto|fed|tariff|trump|rate/)?'CRIT':'NEWS';newsItems.unshift({time:new Date(item.published_on*1000).toLocaleTimeString(),text:h,source:item.source||'Crypto',pri,col:pri==='CRIT'?'var(--red)':'var(--muted)'});if(newsItems.length>20)newsItems.pop();}});}
+}catch(e){}}
+fetchNews();setInterval(fetchNews,30000);
 
 function $(id){return document.getElementById(id)}
 function fmt(n){return n>=0?'+$'+n.toFixed(2):'-$'+Math.abs(n).toFixed(2)}
 
 function render(){
-  const now=new Date();
-  $('clock').textContent=now.toLocaleTimeString();
+const now=new Date();$('clock').textContent=now.toLocaleTimeString();
+portfolio=10000+totalPnl;
+const wr=tradeCount>0?(winCount/tradeCount*100):0;
+const status=$('bot-status');
+status.textContent=botConnected?'BOT LIVE':'SCANNING';
+status.className=botConnected?'bot-live':'bot-offline';
+$('pnl-value').textContent='$'+portfolio.toFixed(2);
+$('pnl-value').style.color=totalPnl>=0?'var(--green)':'var(--red)';
 
-  const portfolio=10000+totalPnl;
-  window.portfolio=portfolio; // make accessible to signal generators
-  const wr=tradeCount>0?(winCount/tradeCount*100):0;
+$('stats').innerHTML=[
+['TOTAL P&L',fmt(totalPnl),(totalPnl/100).toFixed(2)+'% return',totalPnl>=0?'green':'red'],
+['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L',wr>60?'green':'blue'],
+['TRADES',tradeCount+'',closedTrades.length+' closed','cyan'],
+['ACTIVE',activePositions.length+'',activePositions.length+' open','amber'],
+['BTC','$'+(btcPrice?btcPrice.toLocaleString():'--'),priceSource,'purple'],
+['NEWS',newsItems.length+' items','Scanning sources','amber'],
+].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
 
-  // Stats
-  $('stats').innerHTML=[
-    ['PORTFOLIO','$'+portfolio.toFixed(2),fmt(totalPnl)+' ('+(totalPnl/100).toFixed(1)+'%)',totalPnl>=0?'green':'red'],
-    ['TOTAL P&L',fmt(totalPnl),(totalPnl/100).toFixed(2)+'% return',totalPnl>=0?'green':'red'],
-    ['TODAY P&L',fmt(todayPnl),closedTrades.length+' closed trades',todayPnl>=0?'green':'red'],
-    ['WIN RATE',wr.toFixed(1)+'%',winCount+'W / '+(tradeCount-winCount)+'L','blue'],
-    ['SIGNALS',signals.length+' active',tradeCount+' total trades','cyan'],
-    ['NEWS',newsItems.length+' items','Scanning 14 sources','amber'],
-  ].map(([l,v,s,c])=>'<div class="stat"><div class="stat-l">'+l+'</div><div class="stat-v" style="color:var(--'+c+')">'+v+'</div><div class="stat-s">'+s+'</div></div>').join('');
+const bigPnl=$('big-pnl');bigPnl.textContent=fmt(totalPnl);bigPnl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+$('big-pnl-sub').textContent=tradeCount+' trades | '+wr.toFixed(0)+'% win rate | '+priceSource;
 
-  // Big P&L display
-  const bigPnl=$('big-pnl');
-  bigPnl.textContent=(totalPnl>=0?'+$':'-$')+Math.abs(totalPnl).toFixed(2);
-  bigPnl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
-  $('big-pnl-sub').innerHTML=tradeCount+' trades | '+wr.toFixed(0)+'% win rate | <span style="color:var(--muted)">'+priceSource+'</span>';
-  // P&L equity curve
-  if(pnlHistory.length>1){
-    const mn=Math.min(...pnlHistory,0),mx=Math.max(...pnlHistory,0),rng=mx-mn||1;
-    $('pnl-chart').innerHTML=pnlHistory.slice(-100).map(v=>{
-      const h=Math.max(2,((v-mn)/rng)*70);
-      return '<div style="height:'+h+'px;background:'+(v>=0?'var(--green)':'var(--red)')+'" title="$'+v.toFixed(2)+'"></div>';
-    }).join('');
-  }
+if(pnlHistory.length>1){const mn=Math.min(...pnlHistory,0),mx=Math.max(...pnlHistory,0),rng=mx-mn||1;$('pnl-chart').innerHTML=pnlHistory.slice(-100).map(v=>{const h=Math.max(2,((v-mn)/rng)*70);return '<div style="height:'+h+'px;background:'+(v>=0?'var(--green)':'var(--red)')+'" title="$'+v.toFixed(2)+'"></div>';}).join('');}
 
-  // Closed positions table with running total
-  $('closed-count').textContent=closedTrades.length+' trades';
-  const closedTotalPnl=closedTrades.reduce((s,t)=>s+t.pnl,0);
-  const ctEl=$('closed-pnl-total');
-  ctEl.textContent='Total: '+(closedTotalPnl>=0?'+$':'-$')+Math.abs(closedTotalPnl).toFixed(2);
-  ctEl.style.color=closedTotalPnl>=0?'var(--green)':'var(--red)';
-  let runningTotal=0;
-  // Show newest first but calculate running total from oldest
-  const ordered=[...closedTrades].reverse();
-  const runTotals=ordered.map(t=>{runningTotal+=t.pnl;return runningTotal;}).reverse();
-  $('closed-table').innerHTML=closedTrades.slice(0,25).map((t,i)=>{
-    const sc='t-'+t.strat.toLowerCase();
-    const sd=['YES','BUY','LONG'].includes(t.side)?'t-buy':'t-sell';
-    const pnlStr=t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2);
-    const pnlCol=t.pnl>=0?'var(--green)':'var(--red)';
-    const rt=runTotals[i]||0;
-    const rtStr=rt>=0?'+$'+rt.toFixed(2):'-$'+Math.abs(rt).toFixed(2);
-    const rtCol=rt>=0?'var(--green)':'var(--red)';
-    const resBg=t.result==='WIN'?'t-buy':'t-sell';
-    return '<tr><td style="color:var(--muted)">'+t.time+'</td><td><span class="tag '+sc+'">'+t.strat+'</span></td><td><span class="tag '+sd+'">'+t.side+'</span></td><td>'+t.asset+'</td><td style="color:var(--muted)">'+t.venue+'</td><td>'+t.size+'</td><td style="color:'+pnlCol+';font-weight:700">'+pnlStr+'</td><td style="color:'+rtCol+'">'+rtStr+'</td><td><span class="tag '+resBg+'">'+t.result+'</span></td></tr>';
-  }).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No closed trades yet...</td></tr>';
+$('closed-count').textContent=closedTrades.length+' trades';
+const ctp=closedTrades.reduce((s,t)=>s+(t.pnl||0),0);
+$('closed-pnl-total').textContent='Total: '+fmt(ctp);$('closed-pnl-total').style.color=ctp>=0?'var(--green)':'var(--red)';
+$('closed-table').innerHTML=closedTrades.slice(0,30).map(t=>{const sd=['YES','BUY','LONG'].includes(t.side)?'t-buy':'t-sell';const sc='t-'+(t.strat||'arb').toLowerCase();const ps=t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2);const pc=t.pnl>=0?'var(--green)':'var(--red)';const rb=t.result==='WIN'?'t-buy':'t-sell';return '<tr><td style="color:var(--muted)">'+t.time+'</td><td><span class="tag '+sc+'">'+t.strat+'</span></td><td><span class="tag '+sd+'">'+t.side+'</span></td><td>'+t.asset+'</td><td style="color:var(--muted)">'+t.venue+'</td><td>'+t.size+'</td><td style="color:'+pc+';font-weight:700">'+ps+'</td><td><span class="tag '+rb+'">'+t.result+'</span></td></tr>';}).join('')||'<tr><td colspan="8" style="color:var(--muted);text-align:center">No trades yet — bot is scanning...</td></tr>';
 
-  // P&L banner (sticky header)
-  const pnlEl=$('pnl-value');
-  pnlEl.textContent=(totalPnl>=0?'+':'')+totalPnl.toFixed(2);
-  pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+$('active-count').textContent=activePositions.length+' open';
+$('active-table').innerHTML=activePositions.map(p=>{const sc='t-'+(p.strat||'arb').toLowerCase();const sd=['YES','BUY','LONG'].includes(p.side)?'t-buy':'t-sell';const up=p.unrealizedPnl||0;const us=up>=0?'+$'+up.toFixed(2):'-$'+Math.abs(up).toFixed(2);const uc=up>=0?'var(--green)':'var(--red)';const age=p.openedAt?Math.round((Date.now()-p.openedAt)/1000):0;const as=age<60?age+'s':Math.round(age/60)+'m';return '<tr><td style="color:var(--muted)">'+(p.time||'')+'</td><td><span class="tag '+sc+'">'+(p.strat||'')+'</span></td><td><span class="tag '+sd+'">'+(p.side||'')+'</span></td><td>'+(p.asset||'')+'</td><td style="color:var(--muted)">'+(p.venue||'')+'</td><td>'+(p.entry||'')+'</td><td>$'+(p.size||0)+'</td><td style="color:'+uc+';font-weight:700">'+us+'</td><td style="color:var(--muted)">'+as+'</td></tr>';}).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No open positions</td></tr>';
 
-  // Active positions — update unrealized P&L with live prices
-  activePositions.forEach(p=>{
-    const age=(Date.now()-p.openedAt)/1000;
-    // Simulate unrealized P&L drifting based on time held
-    p.unrealizedPnl=p.size*(Math.random()-0.45)*0.02*Math.sqrt(age/30);
-  });
-  $('active-count').textContent=activePositions.length+' open';
-  $('active-table').innerHTML=activePositions.map(p=>{
-    const sc='t-'+p.strat.toLowerCase();
-    const sd=['YES','BUY','LONG'].includes(p.side)?'t-buy':'t-sell';
-    const upnl=p.unrealizedPnl;
-    const upnlStr=upnl>=0?'+$'+upnl.toFixed(2):'-$'+Math.abs(upnl).toFixed(2);
-    const upnlCol=upnl>=0?'var(--green)':'var(--red)';
-    const ageSec=Math.round((Date.now()-p.openedAt)/1000);
-    const ageStr=ageSec<60?ageSec+'s':Math.round(ageSec/60)+'m';
-    return '<tr><td style="color:var(--muted)">'+p.time+'</td><td><span class="tag '+sc+'">'+p.strat+'</span></td><td><span class="tag '+sd+'">'+p.side+'</span></td><td>'+p.asset+'</td><td style="color:var(--muted)">'+p.venue+'</td><td>'+p.entry+'</td><td>$'+p.size.toFixed(0)+'</td><td style="color:'+upnlCol+';font-weight:700">'+upnlStr+'</td><td style="color:var(--muted)">'+ageStr+'</td></tr>';
-  }).join('')||'<tr><td colspan="9" style="color:var(--muted);text-align:center">No open positions</td></tr>';
+$('signals').innerHTML=(signals||[]).slice(0,15).map(s=>{const sc='t-'+(s.strat||'arb').toLowerCase();const sd=['YES','BUY','LONG'].includes(s.side)?'t-buy':'t-sell';return '<div style="padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:4px">'+(s.time||'')+'</span><span class="tag '+sc+'">'+(s.strat||'')+'</span> <span class="tag '+sd+'">'+(s.side||'')+'</span> <span style="margin-left:4px">'+(s.asset||'')+'</span> <span style="color:var(--muted);font-size:9px;margin-left:6px">'+(s.reason||'')+'</span></div>';}).join('')||'<div style="color:var(--muted)">Scanning for signals...</div>';
 
-  // News
-  $('news').innerHTML=newsItems.map(n=>{
-    const pc=n.pri==='CRIT'?'t-crit':n.pri==='HIGH'?'t-high':'t-news';
-    return '<div style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:6px">'+n.time+'</span><span class="tag '+pc+'">'+n.pri+'</span> <span style="color:'+n.col+';margin-left:4px">'+n.text+'</span> <span style="color:var(--muted);font-size:8px">['+n.source+']</span></div>';
-  }).join('')||'<div style="color:var(--muted)">Loading news feeds from Reuters, CNBC...</div>';
+$('news').innerHTML=newsItems.map(n=>{const pc=n.pri==='CRIT'?'t-crit':n.pri==='HIGH'?'t-high':'t-news';return '<div style="padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);margin-right:4px">'+n.time+'</span><span class="tag '+pc+'">'+n.pri+'</span> <span style="color:'+n.col+';margin-left:4px">'+n.text+'</span> <span style="color:var(--muted);font-size:8px">['+n.source+']</span></div>';}).join('')||'<div style="color:var(--muted)">Loading news...</div>';
 
-  // Trump
-  const tp=currentTrump;
-  const dc=tp.dir==='BULLISH'?'var(--green)':'var(--red)';
-  $('trump').innerHTML='<div class="tbox"><div style="font-size:9px;color:var(--amber);margin-bottom:4px">LATEST DETECTED POST</div><q>'+tp.text+'</q></div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div><div><span style="color:var(--muted)">Expected BTC move:</span> <strong style="color:'+dc+'">'+(tp.dir==='BULLISH'?'+':'-')+tp.move+'%</strong></div><div><span style="color:var(--muted)">Topics:</span> '+tp.topics.map(t=>'<span class="tag t-trump">'+t+'</span>').join(' ')+'</div></div>';
-
-  // Risk
-  const risks=[
-    {l:'Daily P&L',v:Math.abs(totalPnl/100),mx:20,d:(totalPnl/100).toFixed(1)+'% / -20%'},
-    {l:'Max Drawdown',v:Math.max(0,-totalPnl/100),mx:40,d:Math.max(0,-totalPnl/100).toFixed(1)+'% / 40%'},
-    {l:'Consecutive Losses',v:Math.max(0,tradeCount-winCount)>3?3:1,mx:8,d:(tradeCount-winCount>3?3:1)+' / 8'},
-    {l:'Trade Signals',v:signals.length,mx:25,d:signals.length+' / 25'},
-  ];
-  $('risk').innerHTML=risks.map(r=>{
-    const p=r.v/r.mx*100;const c=p>80?'rdng':p>50?'rwarn':'rok';
-    return '<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:9px"><span>'+r.l+'</span><span style="color:var(--muted)">'+r.d+'</span></div><div class="rbar"><div class="rfill '+c+'" style="width:'+Math.min(p,100)+'%"></div></div></div>';
-  }).join('');
-
-  // Performance
-  $('perf').innerHTML=[
-    {n:'LATENCY ARB',c:'var(--purple)',wr:'90-95%',v:'Kalshi'},
-    {n:'TRUMP NEWS',c:'var(--amber)',wr:'80-85%',v:'Binance + Kalshi'},
-    {n:'BREAKING NEWS',c:'var(--cyan)',wr:'65-75%',v:'All venues'},
-    {n:'KALSHI CONTRACTS',c:'var(--blue)',wr:'75-80%',v:'Kalshi'},
-  ].map(p=>'<div class="perf"><div class="perf-n" style="color:'+p.c+'">'+p.n+' <span style="color:var(--muted);font-size:7px">'+p.v+'</span></div><div class="perf-r"><div><div class="perf-v">'+p.wr+'</div><div class="perf-l">Target Win Rate</div></div></div></div>').join('');
+const tp=currentTrump;const dc=tp.dir==='BULLISH'?'var(--green)':tp.dir==='BEARISH'?'var(--red)':'var(--muted)';
+$('trump').innerHTML='<div class="tbox"><q>'+tp.text+'</q></div><div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px"><div><span style="color:var(--muted)">Sentiment:</span> <strong style="color:'+dc+'">'+tp.dir+'</strong></div><div><span style="color:var(--muted)">Confidence:</span> <strong>'+(tp.conf*100).toFixed(0)+'%</strong></div></div>';
 }
 
-// ═══ BOOT v4.7 ═══
-console.log('Dashboard v4.7 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
-tryBinanceWS();             // Try WebSocket first (fastest)
-setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
-  if(!btcPrice)tryBinanceREST();
-},3000);
-fetchNews();                // Load real news headlines
-setInterval(render,1000);
-render();
+setInterval(render,1000);render();
 </script>
 </body>
 </html>
