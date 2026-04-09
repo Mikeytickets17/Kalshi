@@ -22,6 +22,7 @@ from typing import Optional
 import config
 import shared_state
 from exchange import BinanceExecutor, TradeResult
+from flow_analyzer import FlowAnalyzer, ScalpDecision
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
@@ -86,6 +87,12 @@ class LatencyArbBot:
         # Components — Order Book + Flow Analysis
         self._orderbook = OrderBookReader()
 
+        # Components — BTC Scalp Strategy (flow-driven, primary signal)
+        self._flow_btc = FlowAnalyzer(asset="BTC")
+        self._flow_eth = FlowAnalyzer(asset="ETH")
+        self._scalp_positions: list[dict] = []
+        self._scalp_hold_seconds = 900  # 15 minutes max hold
+
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
         self._news_analyzer = NewsAnalyzer()
@@ -145,6 +152,10 @@ class LatencyArbBot:
             asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
             # Order Book + Flow Analysis
             asyncio.create_task(self._orderbook.start(), name="orderbook"),
+            # Strategy 6: BTC Scalp — flow-driven, primary signal, zero delay
+            asyncio.create_task(self._btc_flow_ingestion(), name="btc_flow_ingest"),
+            asyncio.create_task(self._btc_scalp_processor(), name="btc_scalp"),
+            asyncio.create_task(self._btc_scalp_exit_monitor(), name="btc_scalp_exits"),
             # Strategy 3: Universal News → Stocks + BTC + Kalshi
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
@@ -1087,6 +1098,323 @@ class LatencyArbBot:
 
             except Exception as exc:
                 logger.error("Whale copy error: %s", exc, exc_info=True)
+
+    # --- Strategy 6: BTC Scalp — Order Flow Driven ---
+
+    async def _btc_flow_ingestion(self) -> None:
+        """
+        Stream Binance aggTrade data directly into the flow analyzer.
+
+        This runs independently of the price feed — it feeds every single
+        trade tick into the CVD, VWAP, absorption, and sweep detectors.
+        No delays, no batching. Real-time.
+        """
+        import websockets as ws
+
+        logger.info("BTC flow ingestion starting — streaming aggTrade from Binance")
+
+        if self._paper_mode:
+            # In paper mode, feed simulated ticks from the price feed
+            await self._btc_flow_paper()
+            return
+
+        url = f"{config.BINANCE_WS_URL}/btcusdt@aggTrade"
+        while self._running:
+            try:
+                async with ws.connect(url, ping_interval=20) as conn:
+                    logger.info("BTC aggTrade WebSocket connected — flow analyzer active")
+                    while self._running:
+                        import json
+                        msg = await asyncio.wait_for(conn.recv(), timeout=30)
+                        data = json.loads(msg)
+
+                        price = float(data["p"])
+                        qty = float(data["q"])
+                        # Binance: m=true means the buyer is the maker → taker SOLD
+                        side = "sell" if data.get("m", False) else "buy"
+                        ts = float(data["T"]) / 1000.0
+
+                        self._flow_btc.on_trade(price, qty, side, ts)
+
+            except asyncio.TimeoutError:
+                logger.warning("BTC aggTrade timeout, reconnecting...")
+            except Exception as exc:
+                logger.error("BTC aggTrade error: %s, reconnecting in 1s...", exc)
+                await asyncio.sleep(1)
+
+    async def _btc_flow_paper(self) -> None:
+        """Feed simulated flow data in paper mode using price feed ticks."""
+        import random
+        logger.info("[PAPER] BTC flow ingestion in simulation mode")
+        while self._running:
+            state = self._price_feed.get_price("BTC")
+            if state and state.consensus_price > 0:
+                price = state.consensus_price
+                qty = random.uniform(0.001, 0.3)
+                side = random.choice(["buy", "sell"])
+                # Add slight directional bias based on recent momentum
+                self._flow_btc.on_trade(price, qty, side, time.time())
+            await asyncio.sleep(0.05)  # ~20 ticks/sec simulated
+
+    async def _btc_scalp_processor(self) -> None:
+        """
+        BTC scalp strategy — uses flow analyzer as PRIMARY signal.
+
+        Runs every 200ms. No delays. No waiting for news.
+        Pure order flow → decision → execution.
+        """
+        logger.info("BTC Scalp processor started — flow-driven, zero delay")
+
+        # Wait for flow data to accumulate
+        await asyncio.sleep(10)
+
+        while self._running:
+            try:
+                # Get order book state
+                book = self._orderbook.get_book("BTC")
+                if not book or book.timestamp == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Check if we have an active scalp position
+                has_position = len(self._scalp_positions) > 0
+                position_side = ""
+                if has_position:
+                    position_side = self._scalp_positions[0].get("direction", "")
+
+                # Get scalp decision from flow analyzer — THIS IS THE SIGNAL
+                decision = self._flow_btc.get_scalp_decision(
+                    current_price=book.mid_price,
+                    best_bid=book.best_bid,
+                    best_ask=book.best_ask,
+                    book_pressure=book.book_pressure,
+                    has_position=has_position,
+                    position_side=position_side,
+                )
+
+                # Log signal to dashboard
+                if decision.signal and decision.signal.is_actionable:
+                    sig = decision.signal
+                    shared_state.record_signal(
+                        strategy="BTC15",
+                        side=sig.direction.upper(),
+                        asset=f"BTC ${book.mid_price:,.0f}",
+                        venue="Binance",
+                        confidence=sig.confidence,
+                        reason=(
+                            f"60s: {sig.price_momentum:+.3f}% | "
+                            f"CVD: {sig.cvd_slope:+.0f}/s | "
+                            f"abs: {sig.absorption_score:+.2f} | "
+                            f"sweep: {sig.sweep_score:+.2f} | "
+                            f"VWAP: {sig.vwap_distance_pct:+.3f}% | "
+                            f"vol: {sig.vol_regime}"
+                        ),
+                        action="SCANNING",
+                    )
+
+                # Act on the decision
+                if decision.action.startswith("enter_"):
+                    await self._execute_scalp_entry(decision, book.mid_price)
+                elif decision.action == "exit":
+                    await self._execute_scalp_exit(decision, book.mid_price)
+
+                # Check every 200ms — fast enough for scalping
+                await asyncio.sleep(0.2)
+
+            except Exception as exc:
+                logger.error("BTC scalp processor error: %s", exc, exc_info=True)
+                await asyncio.sleep(1)
+
+    async def _execute_scalp_entry(self, decision: ScalpDecision, current_price: float) -> None:
+        """Execute a BTC scalp entry based on flow signal."""
+        # Risk check
+        can_trade, risk_reason = self._risk_manager.check_can_trade(
+            self._portfolio_value,
+            self._active_positions,
+            proposed_category="btc_scalp",
+        )
+        if not can_trade:
+            logger.debug("Scalp risk blocked: %s", risk_reason)
+            return
+
+        # Don't stack scalp positions
+        if len(self._scalp_positions) >= 1:
+            return
+
+        # Kelly-based sizing
+        signal_type = decision.signal.signal_type if decision.signal else "flow"
+        size = self._sizer.compute_scalp_size(
+            signal_type=signal_type,
+            confidence=decision.confidence,
+            size_fraction=decision.size_fraction,
+        )
+
+        if size < config.MIN_TRADE_SIZE_USDC or size > self._available_balance:
+            return
+
+        # Execute immediately — no delay
+        direction = "long" if "long" in decision.action else "short"
+        if direction == "long":
+            result = self._exchange.buy("BTC", size)
+        else:
+            result = self._exchange.sell("BTC", size)
+
+        if not result.success:
+            logger.error("Scalp entry failed: %s", result.error)
+            return
+
+        self._trade_count += 1
+        self._available_balance -= size
+
+        trade_id = f"scalp-btc-{int(time.time()*1000)}"
+        self._scalp_positions.append({
+            "trade_id": trade_id,
+            "entry_time": time.time(),
+            "direction": direction,
+            "entry_price": result.filled_price,
+            "size_usd": result.filled_usd,
+            "qty": result.filled_qty,
+            "stop_price": decision.stop_price,
+            "target_price": decision.target_price,
+            "signal_type": signal_type,
+            "hold_until": time.time() + self._scalp_hold_seconds,
+        })
+
+        shared_state.record_trade_opened(
+            trade_id=trade_id,
+            strategy="BTC15",
+            side=direction.upper(),
+            asset="BTC",
+            venue="Binance",
+            entry_price=result.filled_price,
+            size_usd=result.filled_usd,
+            confidence=decision.confidence,
+            reason=decision.reason[:80],
+        )
+        shared_state.record_signal(
+            strategy="BTC15",
+            side=direction.upper(),
+            asset=f"BTC ${result.filled_price:,.0f}",
+            venue="Binance",
+            confidence=decision.confidence,
+            reason=decision.reason[:80],
+            action="TRADED",
+        )
+
+        logger.info(
+            "SCALP ENTRY: %s BTC $%.2f @ $%.2f (stop=$%.2f, target=$%.2f, signal=%s, conf=%.2f)",
+            direction.upper(), result.filled_usd, result.filled_price,
+            decision.stop_price, decision.target_price,
+            signal_type, decision.confidence,
+        )
+
+    async def _execute_scalp_exit(self, decision: ScalpDecision, current_price: float) -> None:
+        """Exit a scalp position — flow reversed or stop/target hit."""
+        if not self._scalp_positions:
+            return
+
+        pos = self._scalp_positions[0]
+
+        # Execute exit
+        if pos["direction"] == "long":
+            result = self._exchange.sell("BTC", pos["size_usd"])
+        else:
+            result = self._exchange.buy("BTC", pos["size_usd"])
+
+        if not result.success:
+            logger.error("Scalp exit failed: %s", result.error)
+            return
+
+        # Calculate PnL
+        if pos["direction"] == "long":
+            pnl = (result.filled_price - pos["entry_price"]) * pos["qty"]
+        else:
+            pnl = (pos["entry_price"] - result.filled_price) * pos["qty"]
+
+        won = pnl > 0
+        if won:
+            self._win_count += 1
+        self._available_balance += pos["size_usd"] + pnl
+        self._portfolio_value += pnl
+        self._risk_manager.record_trade_result(pnl, source_wallet="btc_scalp")
+        self._sizer.record_result(pos["signal_type"], pnl, pos["size_usd"])
+
+        # Record outcome for signal evaluator
+        self._evaluator.record_outcome(won)
+
+        shared_state.record_trade_closed(
+            trade_id=pos["trade_id"],
+            pnl=pnl,
+            exit_price=result.filled_price,
+            reason=decision.reason[:60],
+        )
+        shared_state.update_portfolio(self._portfolio_value)
+
+        hold_secs = time.time() - pos["entry_time"]
+        logger.info(
+            "SCALP EXIT: %s BTC pnl=$%+.2f (entry=$%.2f exit=$%.2f held=%.0fs, reason=%s)",
+            "WIN" if won else "LOSS", pnl,
+            pos["entry_price"], result.filled_price,
+            hold_secs, decision.reason[:40],
+        )
+
+        self._scalp_positions.clear()
+
+    async def _btc_scalp_exit_monitor(self) -> None:
+        """Monitor scalp positions for stop loss, target, and time expiry."""
+        logger.info("BTC scalp exit monitor started (max hold=%ds)", self._scalp_hold_seconds)
+        while self._running:
+            try:
+                if not self._scalp_positions:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                pos = self._scalp_positions[0]
+                state = self._price_feed.get_price("BTC")
+                if not state:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                current_price = state.consensus_price
+                entry_price = pos["entry_price"]
+
+                # Calculate current PnL
+                if pos["direction"] == "long":
+                    unrealized_pnl_pct = (current_price - entry_price) / entry_price
+                else:
+                    unrealized_pnl_pct = (entry_price - current_price) / entry_price
+
+                exit_reason = None
+
+                # Check stop loss
+                if pos["direction"] == "long" and current_price <= pos["stop_price"]:
+                    exit_reason = f"Stop loss hit at ${current_price:,.0f}"
+                elif pos["direction"] == "short" and current_price >= pos["stop_price"]:
+                    exit_reason = f"Stop loss hit at ${current_price:,.0f}"
+
+                # Check target
+                elif pos["direction"] == "long" and current_price >= pos["target_price"]:
+                    exit_reason = f"Target hit at ${current_price:,.0f}"
+                elif pos["direction"] == "short" and current_price <= pos["target_price"]:
+                    exit_reason = f"Target hit at ${current_price:,.0f}"
+
+                # Check time expiry
+                elif time.time() >= pos["hold_until"]:
+                    exit_reason = f"15min hold expired (pnl={unrealized_pnl_pct:+.2%})"
+
+                if exit_reason:
+                    decision = ScalpDecision(
+                        action="exit", asset="BTC",
+                        confidence=1.0, size_fraction=0.0,
+                        reason=exit_reason,
+                    )
+                    await self._execute_scalp_exit(decision, current_price)
+
+                await asyncio.sleep(0.2)  # Check every 200ms
+
+            except Exception as exc:
+                logger.error("Scalp exit monitor error: %s", exc, exc_info=True)
+                await asyncio.sleep(1)
 
 
 async def main() -> None:

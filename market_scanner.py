@@ -171,57 +171,87 @@ class MarketScanner:
                 market_prob = contract.yes_price
                 edge = true_prob - market_prob
 
-                if edge >= config.EDGE_THRESHOLD_PCT and edge <= config.MAX_EDGE_PCT:
-                    return self._create_opportunity(contract, cex, "YES", market_prob, true_prob, edge)
+                # Subtract estimated spread + fees from edge
+                net_edge = edge - 0.015  # ~1.5% round-trip cost (spread + Kalshi fees)
+                if net_edge >= config.EDGE_THRESHOLD_PCT and net_edge <= config.MAX_EDGE_PCT:
+                    return self._create_opportunity(contract, cex, "YES", market_prob, true_prob, net_edge)
 
             else:
                 # Spot is BELOW strike — NO should be worth more
                 true_prob_no = self._estimate_prob_above(-distance_pct, minutes_left, contract.asset)
                 market_prob_no = contract.no_price
                 edge = true_prob_no - market_prob_no
-
-                if edge >= config.EDGE_THRESHOLD_PCT and edge <= config.MAX_EDGE_PCT:
-                    return self._create_opportunity(contract, cex, "NO", market_prob_no, true_prob_no, edge)
+                net_edge = edge - 0.015
+                if net_edge >= config.EDGE_THRESHOLD_PCT and net_edge <= config.MAX_EDGE_PCT:
+                    return self._create_opportunity(contract, cex, "NO", market_prob_no, true_prob_no, net_edge)
 
         return None
 
     def _estimate_prob_above(self, distance_pct: float, minutes_left: float, asset: str) -> float:
         """
-        Estimate true probability that price stays above/below strike.
+        Estimate true probability using Black-Scholes-style pricing.
 
-        Uses a simplified model based on:
-          - Distance from strike (bigger = more certain)
-          - Time to expiry (less time = more certain if already past strike)
-          - Asset volatility (BTC ~0.5% per 15 min, ETH ~0.7%)
+        Uses the CDF of a log-normal distribution:
+          P(S_T > K) = N(d2) where
+          d2 = (ln(S/K) + (r - 0.5*σ²)*T) / (σ*√T)
+
+        For short-duration contracts, r ≈ 0 (risk-free rate negligible).
+        σ is realized volatility from the price feed (adaptive).
         """
-        # Annualized vol: BTC ~60%, ETH ~80%. Per-minute vol:
-        vol_per_min = {"BTC": 0.0004, "ETH": 0.0006}.get(asset, 0.0005)
+        import math
 
-        # Expected move in remaining time (1 std dev)
-        expected_move = vol_per_min * (minutes_left ** 0.5)
+        # Get realized vol from the flow analyzer if available, else use defaults
+        # Try to get adaptive vol from price_feed's history
+        vol_annual = self._get_realized_vol(asset)
+        t_years = max(minutes_left, 0.5) / 525600  # minutes to years
 
-        if expected_move <= 0:
+        sigma_t = vol_annual * math.sqrt(t_years)
+        if sigma_t <= 0:
             return 0.95 if distance_pct > 0 else 0.05
 
-        # How many standard deviations is the current price from strike?
-        z_score = distance_pct / expected_move
+        # d2 = ln(S/K) / (σ√T)  (simplified, r ≈ 0 for short durations)
+        # distance_pct ≈ (S - K) / K ≈ ln(S/K) for small values
+        log_ratio = math.log(1 + distance_pct) if distance_pct > -0.99 else -5.0
+        d2 = log_ratio / sigma_t
 
-        # Convert z-score to probability using a fast approximation
-        # P(staying above) ≈ cumulative normal distribution
-        if z_score > 3:
-            return 0.98
-        elif z_score > 2:
-            return 0.95
-        elif z_score > 1.5:
-            return 0.90
-        elif z_score > 1:
-            return 0.82
-        elif z_score > 0.5:
-            return 0.70
-        elif z_score > 0.2:
-            return 0.58
-        else:
-            return 0.52
+        # Normal CDF using error function (exact, no lookup table)
+        prob = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2)))
+
+        # Clamp to [0.02, 0.98] — never fully certain
+        return max(0.02, min(0.98, prob))
+
+    def _get_realized_vol(self, asset: str) -> float:
+        """Get realized annualized vol from price feed history."""
+        import math
+
+        history = list(self._feed._history.get(asset, []))
+        if len(history) < 30:
+            # Not enough data — use conservative defaults
+            return {"BTC": 0.65, "ETH": 0.80}.get(asset, 0.70)
+
+        # Compute returns from recent ticks (sample every ~5 seconds)
+        returns = []
+        step = max(1, len(history) // 100)
+        for i in range(step, len(history), step):
+            p0 = history[i - step].price
+            p1 = history[i].price
+            dt = history[i].timestamp - history[i - step].timestamp
+            if p0 > 0 and dt > 0:
+                log_ret = math.log(p1 / p0)
+                # Normalize to per-second return
+                ret_per_sec = log_ret / math.sqrt(dt)
+                returns.append(ret_per_sec)
+
+        if len(returns) < 5:
+            return {"BTC": 0.65, "ETH": 0.80}.get(asset, 0.70)
+
+        mean = sum(returns) / len(returns)
+        variance = sum((r - mean) ** 2 for r in returns) / len(returns)
+        vol_per_sec = math.sqrt(variance)
+        # Annualize: sqrt(seconds in a year)
+        vol_annual = vol_per_sec * math.sqrt(31536000)
+        # Clamp to reasonable range
+        return max(0.20, min(2.0, vol_annual))
 
     def _create_opportunity(
         self, contract: PolymarketContract, cex: PriceState,
