@@ -90,7 +90,7 @@ td{padding:6px 8px;border-bottom:1px solid rgba(26,34,53,.4)}
 <div class="card"><div class="card-h"><span>Strategy Performance</span></div><div class="card-b" id="perf"></div></div>
 </div>
 </div>
-<div class="footer">Multi-Strategy Trading Bot v5.1 — Real-Time Data — 8 Trump Sources | 19 News Feeds | 4 Strategies — Build: 20260407-4</div>
+<div class="footer">Multi-Strategy Trading Bot v5.1 — Real-Time Data — 8 Trump Sources | 19 News Feeds | 4 Strategies — REAL DATA ONLY — Zero Simulation</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -573,13 +573,65 @@ function render(){
   }).join('');
 }
 
-// ═══ BOOT v5.0 ═══
-console.log('Dashboard v5.0 loaded. Closed trades:',closedTrades.length,'Active positions:',activePositions.length);
-tryBinanceWS();             // Try WebSocket first (fastest)
-setTimeout(()=>{            // If WS hasn't connected in 3s, try REST APIs
-  if(!btcPrice)tryBinanceREST();
-},3000);
-fetchNews();                // Load real news headlines
+// ═══ BOT STATE LOADER — real data only ═══
+async function loadBotState(){
+  try{
+    const r=await fetch('bot_state.json?t='+Date.now());
+    if(!r.ok)return;
+    const state=await r.json();
+    const age=(Date.now()/1000)-(state.last_updated||0);
+    if(age>300)return;
+    botConnected=true;
+    totalPnl=(state.portfolio_value||10000)-(state.initial_balance||10000);
+    todayPnl=totalPnl;tradeCount=state.trade_count||0;winCount=state.win_count||0;
+    portfolio=state.portfolio_value||10000;
+    pnlHistory=(state.equity_curve||[]).map(v=>v-(state.initial_balance||10000));
+    if(state.closed_trades&&state.closed_trades.length>0){
+      closedTrades=state.closed_trades.map(t=>({
+        time:new Date((t.closed_at||0)*1000).toLocaleTimeString(),
+        strat:t.strategy||'ARB',side:t.side||'YES',asset:t.asset||'',
+        venue:t.venue||'Kalshi',size:'$'+(t.size_usd||0).toFixed(0),
+        pnl:t.pnl||0,result:t.result||'WIN'}));
+    }
+    if(state.active_positions){
+      activePositions=state.active_positions.map((p,i)=>({
+        id:p.id||'p'+i,time:new Date((p.opened_at||0)*1000).toLocaleTimeString(),
+        strat:p.strategy||'ARB',side:p.side||'YES',asset:p.asset||'',
+        venue:p.venue||'Kalshi',entry:p.entry_price||0,size:p.size_usd||0,
+        unrealizedPnl:p.unrealized_pnl||0,openedAt:(p.opened_at||0)*1000}));
+    }
+    if(state.signals&&state.signals.length>0){
+      signals=state.signals.slice(0,20).map(s=>({
+        time:new Date((s.time||0)*1000).toLocaleTimeString(),
+        strat:s.strategy||'ARB',side:s.side||'YES',asset:s.asset||'',
+        venue:s.venue||'Kalshi',reason:s.reason||'',conf:s.confidence||0}));
+    }
+    if(state.trump_posts&&state.trump_posts.length>0){
+      const tp=state.trump_posts[0];
+      currentTrump={text:tp.text||'',dir:(tp.sentiment||'NEUTRAL').toUpperCase(),
+        conf:tp.confidence||0,move:0,topics:[]};
+    }
+    if(state.news_items&&state.news_items.length>0){
+      const botNews=state.news_items.map(n=>({
+        time:new Date((n.detected_at||0)*1000).toLocaleTimeString(),
+        text:n.headline||'',source:n.source||'Bot',
+        pri:(n.priority||'NEWS').toUpperCase(),
+        col:n.priority==='critical'?'var(--red)':n.priority==='high'?'var(--amber)':'var(--muted)'}));
+      newsItems=[...botNews,...newsItems.filter(n=>!botNews.find(b=>b.text===n.text))].slice(0,30);
+    }
+    if(state.whale_signals){window._whaleSignals=state.whale_signals;}
+    if(state.whale_copies){window._whaleCopies=state.whale_copies;}
+    render();
+  }catch(e){}
+}
+setInterval(loadBotState,30000);
+setTimeout(loadBotState,3000);
+
+// ═══ BOOT v5.2 — REAL DATA ONLY ═══
+console.log('Dashboard v5.2 — zero simulation, real data only');
+tryBinanceWS();
+setTimeout(()=>{if(!btcPrice)tryBinanceREST();},3000);
+fetchNews();
 setInterval(render,1000);
 render();
 </script>
