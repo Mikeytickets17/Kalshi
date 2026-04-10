@@ -405,6 +405,13 @@ class LatencyArbBot:
         while self._running:
             try:
                 for market_id, pos in list(self._active_positions.items()):
+                    # Update unrealized P&L on every check
+                    if pos.side == Side.YES:
+                        unrealized = (pos.current_price - pos.avg_price) * pos.size
+                    else:
+                        unrealized = (pos.avg_price - pos.current_price) * pos.size
+                    shared_state.update_position_pnl(market_id, unrealized)
+
                     should_exit, reason = self._check_exit(pos)
                     if should_exit:
                         await self._close_position(market_id, pos, reason)
