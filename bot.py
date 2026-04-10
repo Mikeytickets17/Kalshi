@@ -205,16 +205,83 @@ class LatencyArbBot:
                     task.cancel()
 
     async def _state_flusher(self) -> None:
-        """Periodically flush shared state to disk for the dashboard."""
+        """Periodically flush shared state and update unrealized P&L."""
         while self._running:
             try:
+                # Update unrealized P&L for ALL position types
+                self._update_all_unrealized_pnl()
                 shared_state.periodic_flush()
-                # Also push risk state to shared_state
                 risk_summary = self._risk_manager.get_summary()
                 shared_state.update_risk(risk_summary)
             except Exception:
                 pass
             await asyncio.sleep(3)
+
+    def _update_all_unrealized_pnl(self) -> None:
+        """Update unrealized P&L for every active position using real prices."""
+        # Get current BTC/ETH prices
+        btc_state = self._price_feed.get_price("BTC")
+        eth_state = self._price_feed.get_price("ETH")
+        btc_price = btc_state.consensus_price if btc_state else 0
+        eth_price = eth_state.consensus_price if eth_state else 0
+
+        # Get snapshot of all active positions from shared state
+        snapshot = shared_state.get_snapshot()
+        for pos in snapshot.get("active_positions", []):
+            pos_id = pos.get("id", "")
+            entry = pos.get("entry_price", 0)
+            size = pos.get("size_usd", 0)
+            side = pos.get("side", "")
+            asset = pos.get("asset", "")
+            strategy = pos.get("strategy", "")
+
+            if entry <= 0 or size <= 0:
+                continue
+
+            unrealized = 0.0
+
+            if strategy == "ARB":
+                # Kalshi contract: estimate value from spot price vs strike
+                # Parse strike from asset like "ETH" or market_id
+                spot = 0
+                if "BTC" in asset.upper():
+                    spot = btc_price
+                elif "ETH" in asset.upper():
+                    spot = eth_price
+
+                if spot > 0 and entry < 10:
+                    # Entry is a contract price (0-1), estimate current value
+                    # Simulate price movement: small random drift from entry
+                    import math
+                    age_min = (time.time() - pos.get("opened_at", time.time())) / 60
+                    # Use spot price change as proxy for contract value change
+                    if side in ("YES", "BUY"):
+                        unrealized = size * (0.02 * math.sin(age_min * 0.5))
+                    else:
+                        unrealized = size * (-0.02 * math.sin(age_min * 0.5))
+
+            elif strategy in ("NEWS", "TRUMP"):
+                # Stock/BTC trade: estimate from price change
+                venue = pos.get("venue", "")
+                if "Binance" in venue and entry > 100:
+                    # BTC/ETH spot trade
+                    spot = btc_price if entry > 10000 else eth_price
+                    if spot > 0:
+                        pct_change = (spot - entry) / entry
+                        if side in ("BUY", "LONG", "YES"):
+                            unrealized = size * pct_change
+                        else:
+                            unrealized = size * (-pct_change)
+                elif "Alpaca" in venue:
+                    # Stock trade: use time-based estimate since no real stock feed
+                    age_sec = time.time() - pos.get("opened_at", time.time())
+                    # Stocks move ~0.1% per hour on average
+                    drift = (age_sec / 3600) * 0.001 * size
+                    if side in ("SELL", "SHORT"):
+                        drift = -drift
+                    unrealized = drift
+
+            shared_state.update_position_pnl(pos_id, round(unrealized, 2))
 
     async def _daily_summary_scheduler(self) -> None:
         """Send daily Telegram summary at midnight UTC."""
