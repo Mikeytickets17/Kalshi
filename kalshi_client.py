@@ -87,12 +87,32 @@ class KalshiClient:
         if not self._client:
             return []
         try:
-            resp = self._client.get_markets(status="open", limit=200)
+            from pykalshi import MarketStatus
+            resp = self._client.markets.get(status=MarketStatus.open, limit=200)
+
+            # Handle both list of model objects and dict responses
+            items = []
+            if isinstance(resp, list):
+                items = resp
+            elif hasattr(resp, 'markets'):
+                items = resp.markets or []
+            elif isinstance(resp, dict):
+                items = resp.get("markets", [])
+
             markets = []
-            for m in resp.get("markets", []):
-                ticker = m.get("ticker", "")
-                title = (m.get("title", "") or "").lower()
-                # Filter for crypto price contracts
+            for m in items:
+                # Convert model objects to dicts if needed
+                if hasattr(m, '__dict__') and not isinstance(m, dict):
+                    d = {}
+                    for attr in ['ticker', 'title', 'yes_ask', 'no_ask', 'last_price',
+                                 'close_time', 'expiration_time', 'volume', 'status',
+                                 'result', 'category']:
+                        d[attr] = getattr(m, attr, None)
+                    m = d
+
+                ticker = m.get("ticker", "") if isinstance(m, dict) else getattr(m, "ticker", "")
+                title = str(m.get("title", "") if isinstance(m, dict) else getattr(m, "title", "")).lower()
+
                 if not any(kw in title for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]):
                     continue
                 market = self._parse_market(m)
@@ -193,8 +213,8 @@ class KalshiClient:
             else:
                 params["no_price"] = price_cents
 
-            resp = self._client.create_order(**params)
-            order = resp.get("order", resp)
+            resp = self._client.orders.create(**params)
+            order = resp if isinstance(resp, dict) else (resp.__dict__ if hasattr(resp, '__dict__') else {})
 
             return KalshiOrder(
                 success=True,
@@ -211,8 +231,12 @@ class KalshiClient:
         if not self._client:
             return None
         try:
-            resp = self._client.get_market(ticker)
-            return resp.get("market", resp)
+            resp = self._client.markets.get_market(ticker)
+            if isinstance(resp, dict):
+                return resp.get("market", resp)
+            elif hasattr(resp, '__dict__'):
+                return {k: getattr(resp, k, None) for k in ['ticker', 'title', 'yes_ask', 'no_ask', 'last_price', 'status', 'result', 'close_time', 'volume']}
+            return resp
         except Exception as exc:
             logger.error("Failed to get market %s: %s", ticker, exc)
             return None
