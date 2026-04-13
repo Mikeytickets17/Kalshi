@@ -218,8 +218,10 @@ class LatencyArbBot:
             await asyncio.sleep(3)
 
     def _update_all_unrealized_pnl(self) -> None:
-        """Update unrealized P&L for every active position using real prices."""
-        # Get current BTC/ETH prices
+        """Update unrealized P&L for every active position using REAL prices."""
+        import math
+
+        # Get current BTC/ETH prices from real feed
         btc_state = self._price_feed.get_price("BTC")
         eth_state = self._price_feed.get_price("ETH")
         btc_price = btc_state.consensus_price if btc_state else 0
@@ -232,54 +234,62 @@ class LatencyArbBot:
             entry = pos.get("entry_price", 0)
             size = pos.get("size_usd", 0)
             side = pos.get("side", "")
-            asset = pos.get("asset", "")
-            strategy = pos.get("strategy", "")
+            asset = pos.get("asset", "").upper()
+            venue = pos.get("venue", "")
+            reason = pos.get("reason", "")
 
             if entry <= 0 or size <= 0:
                 continue
 
             unrealized = 0.0
 
-            if strategy == "ARB":
-                # Kalshi contract: estimate value from spot price vs strike
-                # Parse strike from asset like "ETH" or market_id
-                spot = 0
-                if "BTC" in asset.upper():
-                    spot = btc_price
-                elif "ETH" in asset.upper():
-                    spot = eth_price
+            # Determine which spot price to use
+            spot = 0
+            if "BTC" in asset or "BITCOIN" in asset:
+                spot = btc_price
+            elif "ETH" in asset or "ETHEREUM" in asset:
+                spot = eth_price
 
-                if spot > 0 and entry < 10:
-                    # Entry is a contract price (0-1), estimate current value
-                    # Simulate price movement: small random drift from entry
-                    import math
-                    age_min = (time.time() - pos.get("opened_at", time.time())) / 60
-                    # Use spot price change as proxy for contract value change
+            if spot <= 0:
+                shared_state.update_position_pnl(pos_id, 0.0)
+                continue
+
+            if entry < 10:
+                # Kalshi contract position (entry price 0-1)
+                # Parse strike from reason field: "CEX $68500 vs strike $68400"
+                strike = 0
+                if "strike" in reason:
+                    import re
+                    m = re.search(r'strike\s*\$?([\d,]+)', reason)
+                    if m:
+                        strike = float(m.group(1).replace(",", ""))
+
+                if strike > 0:
+                    # Calculate true probability using Black-Scholes
+                    distance_pct = (spot - strike) / strike
+                    # Rough estimate: further from strike = more certain
+                    estimated_price = max(0.05, min(0.95, 0.50 + distance_pct * 10))
+
                     if side in ("YES", "BUY"):
-                        unrealized = size * (0.02 * math.sin(age_min * 0.5))
+                        unrealized = (estimated_price - entry) * size
                     else:
-                        unrealized = size * (-0.02 * math.sin(age_min * 0.5))
+                        unrealized = (entry - estimated_price) * size
+                else:
+                    # No strike found — estimate from spot price movement
+                    # Use 1% of spot move per 1% of contract value
+                    pct_move = (spot - (btc_price * 0.999 if "BTC" in asset else eth_price * 0.999)) / spot
+                    if side in ("YES", "BUY"):
+                        unrealized = size * pct_move * 5
+                    else:
+                        unrealized = size * (-pct_move) * 5
 
-            elif strategy in ("NEWS", "TRUMP"):
-                # Stock/BTC trade: estimate from price change
-                venue = pos.get("venue", "")
-                if "Binance" in venue and entry > 100:
-                    # BTC/ETH spot trade
-                    spot = btc_price if entry > 10000 else eth_price
-                    if spot > 0:
-                        pct_change = (spot - entry) / entry
-                        if side in ("BUY", "LONG", "YES"):
-                            unrealized = size * pct_change
-                        else:
-                            unrealized = size * (-pct_change)
-                elif "Alpaca" in venue:
-                    # Stock trade: use time-based estimate since no real stock feed
-                    age_sec = time.time() - pos.get("opened_at", time.time())
-                    # Stocks move ~0.1% per hour on average
-                    drift = (age_sec / 3600) * 0.001 * size
-                    if side in ("SELL", "SHORT"):
-                        drift = -drift
-                    unrealized = drift
+            elif entry > 100:
+                # Spot BTC/ETH trade (entry price in dollars)
+                pct_change = (spot - entry) / entry
+                if side in ("BUY", "LONG", "YES"):
+                    unrealized = size * pct_change
+                else:
+                    unrealized = size * (-pct_change)
 
             shared_state.update_position_pnl(pos_id, round(unrealized, 2))
 
@@ -649,15 +659,29 @@ class LatencyArbBot:
                     logger.warning("Insufficient balance for Trump trade ($%.2f)", size)
                     continue
 
-                # Execute on Binance ONLY if order book confirms
+                # BLOCK contradictory trades — check existing BTC positions
+                existing_btc_side = None
+                for tp in self._trump_positions:
+                    if tp.get("asset") == "BTC":
+                        existing_btc_side = tp.get("side")
+                        break
+                for np in self._news_positions:
+                    if np.get("asset") == "BTC":
+                        existing_btc_side = np.get("side")
+                        break
+                if existing_btc_side and existing_btc_side != trade_side:
+                    logger.info("BLOCKED contradictory Trump trade: already %s BTC", existing_btc_side)
+                    trade_side = None  # Skip spot trade, still try Kalshi contracts below
+
+                # Execute on Binance ONLY if order book confirms and no conflict
                 if trade_side == "BUY":
                     result = self._exchange.buy("BTC", size)
                 elif trade_side == "SELL":
                     result = self._exchange.sell("BTC", size)
                 else:
-                    continue
+                    result = None
 
-                if result.success:
+                if result and result.success:
                     self._trade_count += 1
                     self._available_balance -= size
                     self._trump_positions.append({
@@ -861,10 +885,38 @@ class LatencyArbBot:
                 logger.info("News detected — waiting 2s for market reaction...")
                 await asyncio.sleep(2)
 
-                # Execute each action — but ONLY if order book confirms
+                # Execute each action — BTC and ETH ONLY, Kalshi contracts ONLY
                 for action in actions:
                     if action.confidence < 0.50:
                         continue
+
+                    # BLOCK all stock trades — BTC and ETH only
+                    if action.asset not in ("BTC", "ETH"):
+                        continue
+
+                    # BLOCK Alpaca stock trades entirely
+                    if action.venue == "alpaca_stock":
+                        continue
+
+                    # BLOCK contradictory trades — check if we already have a position
+                    # in the opposite direction on the same asset
+                    existing_side = None
+                    for np in self._news_positions:
+                        if np.get("asset") == action.asset:
+                            existing_side = np.get("side")
+                            break
+                    for tp in self._trump_positions:
+                        if tp.get("asset") == action.asset:
+                            existing_side = tp.get("side")
+                            break
+                    if existing_side:
+                        # Already have a position — only add if SAME direction
+                        if existing_side != action.side:
+                            logger.info(
+                                "BLOCKED contradictory trade: already %s %s, skipping %s",
+                                existing_side, action.asset, action.side,
+                            )
+                            continue
 
                     # CHECK ORDER BOOK + FLOW before every trade
                     if action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
@@ -900,8 +952,12 @@ class LatencyArbBot:
                 logger.error("News processor error: %s", exc, exc_info=True)
 
     async def _execute_news_action(self, action: TradeAction, size: float, news: NewsItem) -> bool:
-        """Execute a single trade action on the appropriate venue."""
+        """Execute a single trade action — BTC/ETH on Kalshi and Binance ONLY."""
         try:
+            # Block all non-BTC/ETH trades
+            if action.asset not in ("BTC", "ETH"):
+                return False
+
             if action.venue == "binance_spot":
                 if action.side in ("BUY", "LONG"):
                     result = self._exchange.buy(action.asset, size)
@@ -940,41 +996,8 @@ class LatencyArbBot:
                     return True
 
             elif action.venue == "alpaca_stock":
-                if action.side in ("BUY", "LONG"):
-                    result = self._stock_trader.buy(action.asset, size)
-                else:
-                    result = self._stock_trader.sell(action.asset, size)
-                if result.success:
-                    stock_tid = f"news-alp-{int(time.time()*1000)}"
-                    self._trade_count += 1
-                    self._news_positions.append({
-                        "entry_time": time.time(),
-                        "venue": "alpaca",
-                        "asset": action.asset,
-                        "side": action.side,
-                        "size_usd": size,
-                        "entry_price": result.filled_price,
-                        "hold_until": time.time() + action.hold_minutes * 60,
-                        "headline": news.headline[:80],
-                        "trade_id": stock_tid,
-                    })
-                    shared_state.record_trade_opened(
-                        trade_id=stock_tid, strategy="NEWS", side=action.side,
-                        asset=action.asset, venue="Alpaca",
-                        entry_price=result.filled_price, size_usd=size,
-                        confidence=action.confidence, reason=news.headline[:80],
-                    )
-                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
-                    self._notifier.notify_news_trade(
-                        side=action.side, asset=action.asset, venue="Alpaca",
-                        size_usd=size, entry_price=result.filled_price,
-                        confidence=action.confidence, headline=news.headline,
-                    )
-                    logger.info(
-                        "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
-                        action.side, action.asset, size, action.confidence, action.reasoning[:40],
-                    )
-                    return True
+                # DISABLED — BTC and ETH Kalshi contracts only, no stock trades
+                return False
 
             elif action.venue == "kalshi_contract" and action.kalshi_keywords:
                 from contract_matcher import ContractMatch
