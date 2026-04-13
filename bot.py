@@ -23,8 +23,10 @@ import config
 import shared_state
 from exchange import BinanceExecutor, TradeResult
 from flow_analyzer import FlowAnalyzer, ScalpDecision
+from alerts import AlertManager
 from edge_scanner import EdgeScanner, ArbOpportunity
 from ghpages_publisher import GHPagesPublisher
+from spread_reader import SpreadReader, SpreadOpportunity
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
@@ -107,6 +109,12 @@ class LatencyArbBot:
         # Components — Dashboard publisher (pushes state to GitHub Pages)
         self._publisher = GHPagesPublisher()
 
+        # Components — Polymarket-Coinbase spread reader
+        self._spread_reader = SpreadReader()
+
+        # Components — Multi-channel alerts (Apprise)
+        self._alerts = AlertManager()
+
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
         self._news_analyzer = NewsAnalyzer()
@@ -176,6 +184,9 @@ class LatencyArbBot:
                 name="edge_scanner",
             ),
             asyncio.create_task(self._edge_processor(), name="edge_processor"),
+            # Polymarket-Coinbase spread reader
+            asyncio.create_task(self._spread_reader.start(), name="spread_reader"),
+            asyncio.create_task(self._spread_processor(), name="spread_processor"),
             # Strategy 3: Universal News → Stocks + BTC + Kalshi
             asyncio.create_task(self._news_feed.start(), name="news_feed"),
             asyncio.create_task(self._news_processor(), name="news_processor"),
@@ -560,6 +571,11 @@ class LatencyArbBot:
         del self._active_positions[market_id]
 
         self._notifier.notify_trade_closed(position, pnl, reason)
+        self._alerts.alert_trade_closed(
+            strategy=position.category or "ARB",
+            asset=position.source_wallet or market_id,
+            pnl=pnl, result="WIN" if won else "LOSS",
+        )
 
         # Record to shared state for dashboard
         shared_state.record_trade_closed(
@@ -1217,6 +1233,87 @@ class LatencyArbBot:
 
             except Exception as exc:
                 logger.error("Whale copy error: %s", exc, exc_info=True)
+
+    # --- Strategy 8: Polymarket-Coinbase Spread Trading ---
+
+    async def _spread_processor(self) -> None:
+        """Process Polymarket-Coinbase spread opportunities."""
+        logger.info("Spread processor started — reading Polymarket vs Coinbase")
+        while self._running:
+            try:
+                try:
+                    opp = await asyncio.wait_for(
+                        self._spread_reader.opportunity_queue.get(), timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                # Only trade BTC and ETH
+                if opp.asset not in ("BTC", "ETH"):
+                    continue
+
+                # Check for contradictory positions
+                existing_side = None
+                for pos in list(self._active_positions.values()):
+                    if opp.asset in pos.source_wallet:
+                        existing_side = pos.side.value
+                        break
+                if existing_side and existing_side != opp.direction:
+                    logger.info("SPREAD blocked: already %s %s", existing_side, opp.asset)
+                    continue
+
+                # Risk check
+                can_trade, risk_reason = self._risk_manager.check_can_trade(
+                    self._portfolio_value, self._active_positions,
+                    proposed_category="spread",
+                )
+                if not can_trade:
+                    continue
+
+                # Size based on spread magnitude
+                size = min(
+                    self._portfolio_value * 0.03 * (opp.spread / 0.05),
+                    config.MAX_TRADE_SIZE_USDC,
+                    self._available_balance * 0.3,
+                )
+                if size < config.MIN_TRADE_SIZE_USDC:
+                    continue
+
+                # Execute on Kalshi (matching contract)
+                order = self._kalshi.place_order(
+                    ticker=opp.contract_id,
+                    side=opp.direction,
+                    size_usd=size,
+                    price=opp.poly_yes_price if opp.direction == "YES" else opp.poly_no_price,
+                )
+
+                if order.success:
+                    self._trade_count += 1
+                    self._available_balance -= size
+                    trade_id = f"spread-{int(time.time()*1000)}"
+
+                    shared_state.record_trade_opened(
+                        trade_id=trade_id, strategy="SPREAD",
+                        side=opp.direction, asset=opp.asset,
+                        venue="Kalshi", entry_price=order.filled_price or opp.poly_yes_price,
+                        size_usd=size, confidence=opp.spread,
+                        reason=f"Spread {opp.spread:.1%} | spot ${opp.spot_price:,.0f} vs strike ${opp.strike:,.0f}",
+                    )
+
+                    # Send alert
+                    self._alerts.alert_spread_detected(
+                        opp.asset, opp.spread, opp.direction,
+                        opp.spot_price, opp.strike, opp.question,
+                    )
+
+                    logger.info(
+                        "SPREAD TRADE: %s %s $%.2f spread=%.1f%% spot=$%.0f strike=$%.0f",
+                        opp.direction, opp.asset, size, opp.spread * 100,
+                        opp.spot_price, opp.strike,
+                    )
+
+            except Exception as exc:
+                logger.error("Spread processor error: %s", exc, exc_info=True)
 
     # --- Strategy 7: Edge Strategies — Arb, Settlement Sniper, Bracket Arb ---
 
