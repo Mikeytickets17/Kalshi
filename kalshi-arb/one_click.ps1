@@ -37,12 +37,21 @@ if (-not (Test-Path "pyproject.toml")) {
 # ------------- STEP 2: Pull latest code (best-effort) -------------
 Say "[1/7] Pulling latest code..." Cyan
 $parent = Split-Path -Parent $here
+# Isolate the git call from $ErrorActionPreference=Stop -- git writes normal
+# progress to stderr and PowerShell would otherwise treat that as a
+# terminating error. Use SilentlyContinue + $LASTEXITCODE as the truth.
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 try {
-    # git -C so we don't change directories; errors here never leave us stranded
-    git -C $parent pull origin claude/fix-crypto-discovery-EvvsD 2>&1 | Out-Host
+    $pullOutput = & git -C $parent pull origin claude/fix-crypto-discovery-EvvsD 2>&1 | Out-String
+    Write-Host $pullOutput
+    if ($LASTEXITCODE -ne 0) {
+        Say "  (Pull exited $LASTEXITCODE -- continuing with local copy.)" Yellow
+    }
 } catch {
-    Say "  (Couldn't pull -- continuing with whatever is on disk.)" Yellow
+    Say "  (Pull threw: $_ -- continuing with local copy.)" Yellow
 }
+$ErrorActionPreference = $oldEAP
 # Defensive: always reset CWD before every subsequent step.
 Set-Location $here
 
