@@ -82,82 +82,76 @@ class KalshiClient:
     def is_connected(self) -> bool:
         return self._client is not None
 
-    # Crypto contract ticker prefixes on Kalshi production. Every BTC/ETH
-    # price-range market ticker starts with one of these (verified via
-    # discover_kalshi.py — series were e.g. KXBTC, KXBTCD, KXBTC15M, KXETH,
-    # KXETHD, KXETH15M, plus legacy BTCD/ETHD).
-    CRYPTO_PREFIXES = (
-        "KXBTC", "KXETH", "KXBCH",   # new-format
-        "BTCD", "ETHD",              # legacy Above/below
-        "BTC-", "ETH-",              # legacy range
+    # Crypto series on Kalshi production (verified via discover_kalshi.py).
+    CRYPTO_SERIES = (
+        "KXBTC15M",   # Bitcoin 15-minute up/down
+        "KXBTC",      # Bitcoin hourly range
+        "KXBTCD",     # Bitcoin daily above/below
+        "KXETH15M",   # Ethereum 15-minute up/down
+        "KXETH",      # Ethereum hourly range
+        "KXETHD",     # Ethereum daily above/below
     )
 
     def get_crypto_markets(self) -> list[KalshiMarket]:
         """Fetch open crypto price contracts from Kalshi.
 
-        Paginates the full /markets list and keeps only markets whose ticker
-        starts with a known crypto prefix. The pykalshi Market objects leave
-        series_ticker as None on returned rows, so we filter by ticker prefix
-        instead — which is the stable identifier.
+        pykalshi's get_markets paginates internally only when fetch_all=True,
+        and it accepts a series_ticker kwarg to filter at the API level.
+        Combining both gives us every crypto market in a handful of calls.
         """
         if not self._client:
             return []
 
         markets: list[KalshiMarket] = []
         seen: set[str] = set()
-        cursor: Optional[str] = None
-        total_scanned = 0
-        pages_done = 0
-        max_pages = 30  # ~30k markets — more than enough to cover production
+        per_series: dict[str, int] = {}
 
-        for _ in range(max_pages):
-            kwargs: dict = {"limit": 1000}
-            if cursor:
-                kwargs["cursor"] = cursor
+        for series in self.CRYPTO_SERIES:
             try:
-                raw = self._client.get_markets(**kwargs)
+                raw = self._client.get_markets(
+                    series_ticker=series,
+                    fetch_all=True,
+                )
             except Exception as exc:
-                logger.error("Kalshi get_markets page failed: %s", exc)
-                break
+                logger.debug("Kalshi series %s failed: %s", series, exc)
+                per_series[series] = 0
+                continue
 
-            if raw is None:
-                break
-            if hasattr(raw, "markets"):
-                page = list(raw.markets or [])
-                next_cursor = getattr(raw, "cursor", None) or None
-            elif isinstance(raw, dict):
-                page = list(raw.get("markets") or [])
-                next_cursor = raw.get("cursor") or None
-            else:
-                try:
-                    page = list(raw)
-                except TypeError:
-                    page = []
-                next_cursor = None
+            try:
+                page = list(raw or [])
+            except TypeError:
+                page = []
 
-            total_scanned += len(page)
-            pages_done += 1
+            per_series[series] = len(page)
 
             for m in page:
                 ticker = str(getattr(m, "ticker", "") or "")
                 if not ticker or ticker in seen:
-                    continue
-                if not any(ticker.startswith(p) for p in self.CRYPTO_PREFIXES):
                     continue
                 parsed = self._parse_market_obj(m)
                 if parsed:
                     seen.add(ticker)
                     markets.append(parsed)
 
-            if not next_cursor or not page:
-                break
-            cursor = next_cursor
-
+        hits = {k: v for k, v in per_series.items() if v}
         logger.info(
-            "Fetched %d crypto contracts from Kalshi (scanned %d markets in %d pages)",
-            len(markets), total_scanned, pages_done,
+            "Fetched %d open crypto contracts from Kalshi (raw per series: %s)",
+            len(markets), hits or "none",
         )
         return markets
+
+    @staticmethod
+    def _enum_str(v: Any) -> str:
+        """Normalize a pykalshi enum (MarketStatus.OPEN) or string to lowercase."""
+        if v is None:
+            return ""
+        # pykalshi uses Python enums — .value gives the wire string
+        val = getattr(v, "value", None)
+        if val is None:
+            val = getattr(v, "name", None)
+        if val is None:
+            val = v
+        return str(val).lower()
 
     def _parse_market_obj(self, m: Any) -> Optional[KalshiMarket]:
         """Parse a pykalshi Market object into our KalshiMarket dataclass."""
@@ -166,8 +160,8 @@ class KalshiClient:
             if not ticker:
                 return None
 
-            status = str(getattr(m, "status", "") or "").lower()
-            result = str(getattr(m, "result", "") or "").lower()
+            status = self._enum_str(getattr(m, "status", None))
+            result = self._enum_str(getattr(m, "result", None))
             settled = result in ("yes", "no") or status in (
                 "settled", "finalized", "closed", "determined",
             )
