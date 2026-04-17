@@ -180,6 +180,18 @@ class KalshiClient:
             len(markets), hits or "none",
         )
 
+        # Publish fetch stats to the dashboard so we can verify remotely.
+        try:
+            import shared_state
+            if markets:
+                shared_state.record_kalshi_fetch(len(markets), per_series)
+            else:
+                shared_state.record_kalshi_error(
+                    f"0 markets; per_series={per_series}"
+                )
+        except Exception:
+            pass
+
         self._crypto_cache = markets
         self._crypto_cache_time = now
         return markets

@@ -41,6 +41,13 @@ _state: dict[str, Any] = {
     "start_time": time.time(),
     "last_updated": time.time(),
     "bot_running": False,
+    "kalshi_health": {
+        "last_fetch_ts": 0.0,
+        "last_fetch_count": 0,
+        "per_series": {},
+        "last_error": "",
+        "error_count": 0,
+    },
 }
 
 
@@ -273,6 +280,26 @@ def update_risk(risk_data: dict) -> None:
     """Update risk management state."""
     with _lock:
         _state["risk"] = risk_data
+        _state["last_updated"] = time.time()
+
+
+def record_kalshi_fetch(count: int, per_series: dict) -> None:
+    """Record a successful crypto-market fetch for health monitoring."""
+    with _lock:
+        h = _state.setdefault("kalshi_health", {})
+        h["last_fetch_ts"] = time.time()
+        h["last_fetch_count"] = int(count)
+        h["per_series"] = dict(per_series)
+        h["last_error"] = ""
+        _state["last_updated"] = time.time()
+
+
+def record_kalshi_error(err: str) -> None:
+    """Record a crypto-market fetch failure for health monitoring."""
+    with _lock:
+        h = _state.setdefault("kalshi_health", {})
+        h["last_error"] = str(err)[:300]
+        h["error_count"] = int(h.get("error_count", 0)) + 1
         _state["last_updated"] = time.time()
 
 
