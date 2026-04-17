@@ -135,7 +135,7 @@ class ShardedWS:
         """One shard = one AsyncFeed subscribed to multiple channels."""
         health = self._shards[shard_id]
         try:
-            feed = self.rest.underlying.feed()  # pykalshi sync feed
+            feed = self.rest.async_underlying().feed()  # pykalshi AsyncFeed
         except Exception as exc:  # noqa: BLE001
             _log.error("ws.feed_create_failed", shard_id=shard_id, error=str(exc))
             health.alive = False

@@ -86,7 +86,7 @@ async def probe_ws_subscription_cap(
         "steps": [],
     }
     step_size = 50
-    feed = rest.underlying.feed()
+    feed = rest.async_underlying().feed()
     msg_counter: dict[str, int] = {}
 
     async with feed as f:
@@ -237,7 +237,7 @@ async def probe_end_to_end_loop(rest: RestClient, ticker: str, wait_sec: float =
     """Measure WS-event → REST-fire round-trip on a real liquid ticker."""
     _log.info("probe.e2e.start", ticker=ticker, wait_sec=wait_sec)
     result: dict[str, Any] = {"events_seen": 0, "orders_fired": 0, "latency_ms": []}
-    feed = rest.underlying.feed()
+    feed = rest.async_underlying().feed()
     start = time.monotonic()
 
     async with feed as f:

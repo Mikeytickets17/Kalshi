@@ -21,6 +21,7 @@ from typing import Any
 
 from pykalshi import KalshiClient as _PyKalshi
 from pykalshi._sync.markets import MarketStatus
+from pykalshi.aclient import AsyncKalshiClient as _AsyncPyKalshi
 
 from .. import log
 
@@ -54,11 +55,23 @@ class RestClient:
             private_key_path=str(cfg.private_key_path),
             demo=cfg.use_demo,
         )
+        self._async_pyk: _AsyncPyKalshi | None = None
 
     @property
     def underlying(self) -> _PyKalshi:
-        """For callers that need direct pykalshi access (the AsyncFeed)."""
+        """Sync pykalshi client for REST calls."""
         return self._pyk
+
+    def async_underlying(self) -> _AsyncPyKalshi:
+        """Lazy async pykalshi client. Required for AsyncFeed (the sync Feed
+        class is threaded and does NOT support `async with`)."""
+        if self._async_pyk is None:
+            self._async_pyk = _AsyncPyKalshi(
+                api_key_id=self.cfg.api_key_id,
+                private_key_path=str(self.cfg.private_key_path),
+                demo=self.cfg.use_demo,
+            )
+        return self._async_pyk
 
     # ---------- Universe discovery ----------
 
