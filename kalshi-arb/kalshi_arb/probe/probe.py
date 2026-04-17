@@ -312,6 +312,14 @@ async def run() -> ProbeResults:
         )
     )
 
+    # Instantiate results BEFORE anything that might append to it. Previous
+    # regression: fallback branch appended to results.notes before the
+    # dataclass was constructed, crashing with UnboundLocalError.
+    results = ProbeResults(
+        ts_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        demo_mode=True,
+    )
+
     # Build a ticker pool from the first whitelisted category that has >=50
     # open markets. Demo may have fewer markets than prod; we adapt.
     prefixes: tuple[str, ...] = ()
@@ -330,11 +338,6 @@ async def run() -> ProbeResults:
             f"on demo; fell back to first {len(pool_tickers)} open markets of any kind."
         )
     _log.info("probe.pool", count=len(pool_tickers))
-
-    results = ProbeResults(
-        ts_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        demo_mode=True,
-    )
     # 1. WS cap
     results.ws_subscription = await probe_ws_subscription_cap(rest, pool_tickers[:500])
 

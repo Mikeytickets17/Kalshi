@@ -184,5 +184,25 @@ echo "$SMOKE_OUT" | grep -q "final cwd: $WORKDIR"            || fail "one_click.
 cd "$REPO_ROOT"
 ok "one_click.ps1 smoke test (phases 1-3 + cwd stable)"
 
+# ---- 4. Python static-analysis (pyflakes) ------------------------------
+# pyflakes catches the specific class of bugs that reached the operator
+# twice now: use-before-assign (UnboundLocalError), undefined names,
+# unused imports of functions we meant to call. Runs on the whole package.
+if command -v pyflakes >/dev/null 2>&1; then
+    # Fail on F821 (undefined name, aka use-before-assign) anywhere in the
+    # package. We ignore F401 (unused import) because refactoring noise
+    # shouldn't block a push.
+    PYFLAKES_OUT="$(pyflakes kalshi_arb/ 2>&1 || true)"
+    BAD="$(echo "$PYFLAKES_OUT" | grep -v 'imported but unused' | grep -v 'assigned to but never used' || true)"
+    if [ -n "$BAD" ]; then
+        echo "[FAIL] pyflakes found use-before-assign / undefined name issues:"
+        echo "$BAD"
+        exit 1
+    fi
+    ok "pyflakes (F821 + undefined names clean)"
+else
+    echo "[WARN] pyflakes not installed; pip install pyflakes"
+fi
+
 echo ""
-echo "All PowerShell validation checks passed."
+echo "All PowerShell + Python validation checks passed."
