@@ -82,61 +82,80 @@ class KalshiClient:
     def is_connected(self) -> bool:
         return self._client is not None
 
-    # Real crypto series tickers on Kalshi production (verified via
-    # discover_kalshi.py). Querying /markets by series_ticker is the only way
-    # to bypass the ~10k sports/TV/politics markets crowding out crypto.
-    CRYPTO_SERIES = (
-        "KXBTC15M",   # Bitcoin 15-minute up/down
-        "KXBTC",      # Bitcoin hourly range
-        "KXBTCD",     # Bitcoin daily above/below
-        "KXETH15M",   # Ethereum 15-minute up/down
-        "KXETH",      # Ethereum hourly range
-        "KXETHD",     # Ethereum daily above/below
+    # Crypto contract ticker prefixes on Kalshi production. Every BTC/ETH
+    # price-range market ticker starts with one of these (verified via
+    # discover_kalshi.py — series were e.g. KXBTC, KXBTCD, KXBTC15M, KXETH,
+    # KXETHD, KXETH15M, plus legacy BTCD/ETHD).
+    CRYPTO_PREFIXES = (
+        "KXBTC", "KXETH", "KXBCH",   # new-format
+        "BTCD", "ETHD",              # legacy Above/below
+        "BTC-", "ETH-",              # legacy range
     )
 
     def get_crypto_markets(self) -> list[KalshiMarket]:
         """Fetch open crypto price contracts from Kalshi.
 
-        Queries each crypto series by ticker. Falls back to a plain unfiltered
-        get_markets(limit=200) if every series call fails — matches the old
-        behavior so callers never see an exception.
+        Paginates the full /markets list and keeps only markets whose ticker
+        starts with a known crypto prefix. The pykalshi Market objects leave
+        series_ticker as None on returned rows, so we filter by ticker prefix
+        instead — which is the stable identifier.
         """
         if not self._client:
             return []
 
         markets: list[KalshiMarket] = []
         seen: set[str] = set()
+        cursor: Optional[str] = None
+        total_scanned = 0
+        pages_done = 0
+        max_pages = 30  # ~30k markets — more than enough to cover production
 
-        for series in self.CRYPTO_SERIES:
+        for _ in range(max_pages):
+            kwargs: dict = {"limit": 1000}
+            if cursor:
+                kwargs["cursor"] = cursor
             try:
-                raw = self._client.get_markets(series_ticker=series, limit=200)
+                raw = self._client.get_markets(**kwargs)
             except Exception as exc:
-                logger.debug("Kalshi series %s query failed: %s", series, exc)
-                continue
+                logger.error("Kalshi get_markets page failed: %s", exc)
+                break
 
-            # pykalshi may return a list, an object with .markets, or a dict.
             if raw is None:
-                continue
+                break
             if hasattr(raw, "markets"):
-                raw = raw.markets or []
+                page = list(raw.markets or [])
+                next_cursor = getattr(raw, "cursor", None) or None
             elif isinstance(raw, dict):
-                raw = raw.get("markets") or []
+                page = list(raw.get("markets") or [])
+                next_cursor = raw.get("cursor") or None
+            else:
+                try:
+                    page = list(raw)
+                except TypeError:
+                    page = []
+                next_cursor = None
 
-            try:
-                iterable = list(raw)
-            except TypeError:
-                continue
+            total_scanned += len(page)
+            pages_done += 1
 
-            for m in iterable:
-                parsed = self._parse_market_obj(m)
-                if not parsed or parsed.ticker in seen:
+            for m in page:
+                ticker = str(getattr(m, "ticker", "") or "")
+                if not ticker or ticker in seen:
                     continue
-                seen.add(parsed.ticker)
-                markets.append(parsed)
+                if not any(ticker.startswith(p) for p in self.CRYPTO_PREFIXES):
+                    continue
+                parsed = self._parse_market_obj(m)
+                if parsed:
+                    seen.add(ticker)
+                    markets.append(parsed)
+
+            if not next_cursor or not page:
+                break
+            cursor = next_cursor
 
         logger.info(
-            "Fetched %d crypto contracts from Kalshi (across %d series)",
-            len(markets), len(self.CRYPTO_SERIES),
+            "Fetched %d crypto contracts from Kalshi (scanned %d markets in %d pages)",
+            len(markets), total_scanned, pages_done,
         )
         return markets
 
