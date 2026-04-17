@@ -146,17 +146,20 @@ Set-Location $here   # defensive: ensure we're in the folder with pyproject.toml
 if (-not (Test-Path "pyproject.toml")) {
     Fail "pyproject.toml not found in $(Get-Location). Something drifted the working directory."
 }
-python -m pip install --quiet --upgrade pip 2>&1 | Out-Host
+# Route through cmd /c so PowerShell stops wrapping every stderr line with a
+# NativeCommandError stack trace. --no-warn-script-location silences pip's
+# PATH warnings (several dozen lines on a first install).
+& cmd.exe /c "python -m pip install --quiet --upgrade pip --no-warn-script-location 2>&1"
 if ($LASTEXITCODE -ne 0) { Fail "pip upgrade failed. Check internet." }
 
-python -m pip install --quiet -e ".[dev]" 2>&1 | Out-Host
+& cmd.exe /c "python -m pip install --quiet -e .[dev] --no-warn-script-location 2>&1"
 if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed. Check internet and Python version (need 3.11+)." }
 Say "  Done." Green
 
 # ------------- STEP 6: Run the test suite (sanity check) -------------
 Say ""
 Say "[5/7] Running the test suite..." Cyan
-python -m pytest tests/ -q 2>&1 | Out-Host
+& cmd.exe /c "python -m pytest tests/ -q 2>&1"
 if ($LASTEXITCODE -ne 0) { Fail "Tests failed. Stopping before the probe -- something is broken." }
 
 # ------------- STEP 7: Run the probe -------------
@@ -165,7 +168,7 @@ Say "[6/7] Running the probe (takes ~3-4 minutes)..." Cyan
 Say "  Probes 1-3 run now. Probe 4 (end-to-end loop) is deferred to" Gray
 Say "  the production paper-trading phase per plan." Gray
 Say ""
-python -m kalshi_arb.probe.probe 2>&1 | Out-Host
+& cmd.exe /c "python -m kalshi_arb.probe.probe 2>&1"
 if ($LASTEXITCODE -ne 0) {
     Fail "Probe failed. Open logs\kalshi-arb.log and paste the last 40 lines to Claude."
 }

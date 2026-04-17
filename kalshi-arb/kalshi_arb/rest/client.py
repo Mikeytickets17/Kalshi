@@ -63,12 +63,25 @@ class RestClient:
     # ---------- Universe discovery ----------
 
     def list_open_markets(
-        self, *, series_prefixes: tuple[str, ...] | None = None
+        self,
+        *,
+        series_prefixes: tuple[str, ...] | None = None,
+        limit: int | None = None,
     ) -> list[UniverseMarket]:
-        """Walk /markets?status=open and filter by series prefix if provided."""
+        """Walk /markets?status=open and filter by series prefix if provided.
+
+        When limit is set we fetch a single capped page instead of paginating
+        everything. Probes use this (they only need a ticker pool of a few
+        hundred) — avoids a minute-long full scan of demo which has tens of
+        thousands of markets across every category.
+        """
         out: list[UniverseMarket] = []
-        # pykalshi handles pagination via fetch_all=True. We want open only.
-        raw = self._pyk.get_markets(status=MarketStatus.OPEN, fetch_all=True)
+        if limit is not None:
+            raw = self._pyk.get_markets(
+                status=MarketStatus.OPEN, limit=min(limit, 1000), fetch_all=False
+            )
+        else:
+            raw = self._pyk.get_markets(status=MarketStatus.OPEN, fetch_all=True)
         for m in raw or []:
             ticker = str(getattr(m, "ticker", "") or "")
             if not ticker:

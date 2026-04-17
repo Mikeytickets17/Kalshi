@@ -317,12 +317,18 @@ async def run() -> ProbeResults:
     prefixes: tuple[str, ...] = ()
     for cat in cfg.universe_categories:
         prefixes = prefixes + CATEGORY_PREFIXES.get(cat, ())
-    pool = await asyncio.to_thread(rest.list_open_markets, series_prefixes=prefixes)
+    # Try category-whitelisted tickers first (cheap, likely empty on demo).
+    pool = await asyncio.to_thread(rest.list_open_markets, series_prefixes=prefixes, limit=1000)
     pool_tickers = [m.ticker for m in pool]
     if not pool_tickers:
-        # Demo may not have the prefixes; widen to anything open.
-        pool = await asyncio.to_thread(rest.list_open_markets)
-        pool_tickers = [m.ticker for m in pool][:500]
+        # Demo has few crypto/weather/econ tickers; fall back to 500 of anything.
+        # Capped so we don't paginate through 10k+ demo markets on every probe.
+        pool = await asyncio.to_thread(rest.list_open_markets, limit=500)
+        pool_tickers = [m.ticker for m in pool]
+        results.notes.append(
+            f"Category whitelist {list(cfg.universe_categories)} returned 0 markets "
+            f"on demo; fell back to first {len(pool_tickers)} open markets of any kind."
+        )
     _log.info("probe.pool", count=len(pool_tickers))
 
     results = ProbeResults(
