@@ -34,17 +34,31 @@ logger = logging.getLogger("watchdog")
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BOT_DIR, "bot_state.json")
-BRANCH = "claude/setup-kalshi-bot-vh0aA"
-MAX_RESTARTS = 100
+BOT_STDOUT_LOG = os.path.join(BOT_DIR, "bot_stdout.log")
+MAX_RESTARTS = 1000
 RESTART_DELAY = 10  # seconds between restarts
 STALE_TIMEOUT = 300  # 5 minutes without update = stale
 
 
-def pull_latest():
-    """Pull latest code from git."""
+def current_branch() -> str:
+    """Return the git branch the repo is currently on."""
     try:
         result = subprocess.run(
-            ["git", "pull", "origin", BRANCH],
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=BOT_DIR, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "HEAD"
+
+
+def pull_latest(branch: str):
+    """Pull latest code from git for the given branch."""
+    try:
+        result = subprocess.run(
+            ["git", "pull", "origin", branch],
             cwd=BOT_DIR, capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
@@ -69,29 +83,46 @@ def check_state_fresh() -> bool:
 
 
 def run_bot():
-    """Run the bot as a subprocess."""
+    """Run the bot as a subprocess.
+
+    Route stdout/stderr to a log file instead of PIPE — an unread PIPE fills
+    its OS buffer (~64KB on Windows), blocks the child on write, and kills
+    the bot within seconds. Writing to a file means the bot can stream
+    forever without back-pressure.
+
+    The env tweak forces UTF-8 so Unicode arrows/emoji in log messages
+    don't crash Python's default cp1252 stdout encoder on Windows.
+    """
     logger.info("Starting bot...")
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    stdout_f = open(BOT_STDOUT_LOG, "a", buffering=1, encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
-        [sys.executable, "bot.py"],
+        [sys.executable, "-u", "bot.py"],
         cwd=BOT_DIR,
-        stdout=subprocess.PIPE,
+        stdout=stdout_f,
         stderr=subprocess.STDOUT,
+        env=env,
     )
+    # Stash the file handle so we can close it on exit
+    proc._stdout_file = stdout_f  # type: ignore[attr-defined]
     return proc
 
 
 def main():
+    branch = current_branch()
     logger.info("=" * 60)
     logger.info("WATCHDOG STARTED — monitoring Kalshi trading bot")
     logger.info("Bot directory: %s", BOT_DIR)
-    logger.info("Branch: %s", BRANCH)
+    logger.info("Branch: %s (auto-detected)", branch)
     logger.info("=" * 60)
 
     restart_count = 0
 
     while restart_count < MAX_RESTARTS:
         # Pull latest code before starting
-        pull_latest()
+        pull_latest(branch)
 
         # Start the bot
         proc = run_bot()
@@ -116,6 +147,14 @@ def main():
                     logger.warning("Bot state is stale — may be hung")
 
             time.sleep(10)
+
+        # Close the stdout log handle so the file isn't left locked on Windows
+        stdout_f = getattr(proc, "_stdout_file", None)
+        if stdout_f:
+            try:
+                stdout_f.close()
+            except Exception:
+                pass
 
         # Bot stopped — restart after delay
         restart_count += 1
