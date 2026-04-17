@@ -1,4 +1,4 @@
-# Kalshi Arb — one-click setup + probe. Zero manual steps except pasting the Key ID.
+﻿# Kalshi Arb -- one-click setup + probe. Zero manual steps except pasting the Key ID.
 #
 # This is run from ONE_CLICK.bat so the user never has to open PowerShell directly.
 
@@ -21,7 +21,7 @@ function Fail($text) {
 
 Say ""
 Say "============================================================" Cyan
-Say "  KALSHI ARB — ONE-CLICK SETUP + PROBE" Cyan
+Say "  KALSHI ARB -- ONE-CLICK SETUP + PROBE" Cyan
 Say "============================================================" Cyan
 Say ""
 
@@ -41,7 +41,7 @@ try {
     git pull origin claude/fix-crypto-discovery-EvvsD 2>&1 | Out-Host
     Pop-Location
 } catch {
-    Say "  (Couldn't pull — continuing with whatever is on disk.)" Yellow
+    Say "  (Couldn't pull -- continuing with whatever is on disk.)" Yellow
 }
 
 # ------------- STEP 3: Find the PEM file -------------
@@ -137,7 +137,7 @@ Say "  Done." Green
 Say ""
 Say "[5/7] Running the test suite..." Cyan
 python -m pytest tests/ -q 2>&1 | Out-Host
-if ($LASTEXITCODE -ne 0) { Fail "Tests failed. Stopping before the probe — something is broken." }
+if ($LASTEXITCODE -ne 0) { Fail "Tests failed. Stopping before the probe -- something is broken." }
 
 # ------------- STEP 7: Run the probe -------------
 Say ""
