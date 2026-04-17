@@ -128,13 +128,31 @@ class KalshiClient:
         seen: set[str] = set()
         per_series: dict[str, int] = {}
 
+        # Only fetch markets whose close_time is in the future. This keeps
+        # pykalshi from walking back through months of settled history and
+        # triggering Kalshi's rate limit.
+        min_close_ts = int(now)
+
         for series in self.CRYPTO_SERIES:
+            kwargs: dict = {
+                "series_ticker": series,
+                "limit": 200,
+                "fetch_all": False,  # ONE page only — no history crawl
+                "min_close_ts": min_close_ts,
+            }
+            if MarketStatus is not None:
+                kwargs["status"] = MarketStatus.OPEN
             try:
-                raw = self._client.get_markets(
-                    series_ticker=series,
-                    status=MarketStatus.OPEN if MarketStatus else None,
-                    fetch_all=True,
-                )
+                raw = self._client.get_markets(**kwargs)
+            except TypeError:
+                # pykalshi may not accept min_close_ts — drop and retry
+                kwargs.pop("min_close_ts", None)
+                try:
+                    raw = self._client.get_markets(**kwargs)
+                except Exception as exc:
+                    logger.debug("Kalshi series %s failed: %s", series, exc)
+                    per_series[series] = 0
+                    continue
             except Exception as exc:
                 logger.debug("Kalshi series %s failed: %s", series, exc)
                 per_series[series] = 0
