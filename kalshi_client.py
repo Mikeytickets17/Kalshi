@@ -16,6 +16,16 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Try to import pykalshi's MarketStatus enum for API-side status filtering.
+# If the import fails (older pykalshi), fall back to no status kwarg.
+try:
+    from pykalshi._sync.markets import MarketStatus  # type: ignore
+except Exception:
+    try:
+        from pykalshi.models import MarketStatus  # type: ignore
+    except Exception:
+        MarketStatus = None  # type: ignore
+
 
 @dataclass
 class KalshiMarket:
@@ -47,6 +57,13 @@ class KalshiOrder:
 class KalshiClient:
     """Client for Kalshi's REST API via pykalshi."""
 
+    # Cache the crypto-market snapshot. Multiple subsystems (market_scanner,
+    # edge_scanner, whale_tracker, contract_matcher, spread_reader) each call
+    # get_crypto_markets every few seconds. Without a cache we paginate 6
+    # series × multiple pages × ~6 callers = hundreds of requests/minute,
+    # which Kalshi answers with HTTP 429.
+    _CRYPTO_CACHE_TTL = 30.0  # seconds
+
     def __init__(self) -> None:
         self._use_demo = config.KALSHI_USE_DEMO
         self._api_key_id = config.KALSHI_API_KEY_ID
@@ -54,6 +71,8 @@ class KalshiClient:
         self._paper_mode = config.PAPER_MODE
         self._client: Any = None
         self._base_url = config.KALSHI_BASE_URL_DEMO if self._use_demo else config.KALSHI_BASE_URL_PROD
+        self._crypto_cache: list[KalshiMarket] = []
+        self._crypto_cache_time: float = 0.0
 
         self._init_client()
         logger.info(
@@ -95,12 +114,15 @@ class KalshiClient:
     def get_crypto_markets(self) -> list[KalshiMarket]:
         """Fetch open crypto price contracts from Kalshi.
 
-        pykalshi's get_markets paginates internally only when fetch_all=True,
-        and it accepts a series_ticker kwarg to filter at the API level.
-        Combining both gives us every crypto market in a handful of calls.
+        Results are cached for CRYPTO_CACHE_TTL seconds so that the five
+        subsystems hitting this method don't rate-limit the exchange.
         """
         if not self._client:
             return []
+
+        now = time.time()
+        if self._crypto_cache and (now - self._crypto_cache_time) < self._CRYPTO_CACHE_TTL:
+            return self._crypto_cache
 
         markets: list[KalshiMarket] = []
         seen: set[str] = set()
@@ -110,6 +132,7 @@ class KalshiClient:
             try:
                 raw = self._client.get_markets(
                     series_ticker=series,
+                    status=MarketStatus.OPEN if MarketStatus else None,
                     fetch_all=True,
                 )
             except Exception as exc:
@@ -138,6 +161,9 @@ class KalshiClient:
             "Fetched %d open crypto contracts from Kalshi (raw per series: %s)",
             len(markets), hits or "none",
         )
+
+        self._crypto_cache = markets
+        self._crypto_cache_time = now
         return markets
 
     @staticmethod
