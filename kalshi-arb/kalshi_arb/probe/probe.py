@@ -12,7 +12,9 @@ Probes
 3. REST rate-limit ceiling — ramp request rate on GET /exchange/status until
    429, record the ceiling and Retry-After.
 4. End-to-end arb loop latency — WS book update → detection → demo order
-   fire → fill confirmation.
+   fire → fill confirmation. SKIPPED in demo mode: demo market activity is
+   too thin to produce meaningful numbers. Measured during the prod paper
+   trading phase instead.
 
 Run
 ---
@@ -20,7 +22,11 @@ Run
 
 Results land at config/detected_limits.yaml. If AUTO_PUBLISH=true the script
 commits the yaml back to a dedicated branch so remote reviewers can read it
-without shell access.
+without shell access. Default is AUTO_PUBLISH=false — run once, review the
+yaml, then flip and rerun to publish.
+
+Every result block carries `environment: demo|prod` and a `notes` field so
+downstream consumers never confuse demo-measured numbers for prod capacity.
 """
 
 from __future__ import annotations
@@ -42,6 +48,14 @@ from ..rest.client import RestClient, RestConfig
 _log = log.get("probe")
 
 RESULTS_PATH = Path("config/detected_limits.yaml")
+
+# Demo note — appended to every measurement block so readers never mistake
+# a demo number for a production one.
+DEMO_NOTES = (
+    "Measured in demo environment. Production values may differ — especially "
+    "REST rate-limit ceiling (production is tier-gated) and message volume "
+    "(production markets have vastly higher activity)."
+)
 
 
 @dataclass
@@ -327,26 +341,107 @@ async def run() -> ProbeResults:
 
     if liquid_ticker:
         results.rest_write_latency_ms = await probe_rest_write_latency(rest, liquid_ticker)
-        results.end_to_end_loop_ms = await probe_end_to_end_loop(rest, liquid_ticker)
     else:
-        results.notes.append("No liquid ticker available; REST write + E2E probes skipped.")
+        results.notes.append("No liquid ticker available; REST write probe skipped.")
 
     # 3. REST rate limit
     results.rest_rate_limit = await probe_rest_rate_limit(rest)
+
+    # 4. E2E loop — deferred in demo. Demo market activity is too thin.
+    results.end_to_end_loop_ms = {
+        "status": "deferred",
+        "reason": "prod_paper_phase",
+        "note": (
+            "Demo market activity is too thin for a meaningful end-to-end "
+            "WS→REST loop measurement. Will be captured during the 48-hour "
+            "production paper-trading phase."
+        ),
+    }
+
+    # Stamp environment + notes on every measurement block.
+    _annotate(results, environment="demo" if cfg.kalshi_use_demo else "prod")
+
+    # Scrub any accidentally-leaked account identifiers before writing.
+    _scrub(results)
 
     _write_results(results)
 
     if cfg.auto_publish:
         _publish(results)
+    else:
+        _log.info(
+            "probe.publish_skipped",
+            reason="AUTO_PUBLISH=false (dry run); review YAML before flipping the flag",
+        )
 
     return results
+
+
+def _annotate(results: ProbeResults, *, environment: str) -> None:
+    """Tag every measurement block with environment + boilerplate notes."""
+    note = DEMO_NOTES if environment == "demo" else "Measured in production environment."
+    for block_name in (
+        "ws_subscription",
+        "rest_write_latency_ms",
+        "rest_rate_limit",
+        "end_to_end_loop_ms",
+    ):
+        block = getattr(results, block_name)
+        if isinstance(block, dict):
+            block["environment"] = environment
+            block.setdefault("notes", note)
+
+
+def _scrub(results: ProbeResults) -> None:
+    """Guardrail: strip any key/account/header material from the probe output.
+
+    The probe does not collect these on purpose; this is a belt-and-suspenders
+    check against future regressions. Any value matching redaction patterns
+    is replaced with '<redacted>' and a note added.
+    """
+    import re
+
+    patterns = [
+        re.compile(r"[A-Fa-f0-9]{24,}"),           # long hex IDs
+        re.compile(r"[A-Za-z0-9_-]{32,}"),          # long opaque tokens
+        re.compile(r"Bearer\s+\S+", re.IGNORECASE),
+        re.compile(r"KALSHI[-_]API[-_]KEY", re.IGNORECASE),
+    ]
+    redacted_any = False
+
+    def scrub_value(v: Any) -> Any:
+        nonlocal redacted_any
+        if isinstance(v, str):
+            for p in patterns:
+                if p.search(v):
+                    redacted_any = True
+                    return "<redacted>"
+            return v
+        if isinstance(v, dict):
+            return {k: scrub_value(vv) for k, vv in v.items()}
+        if isinstance(v, list):
+            return [scrub_value(x) for x in v]
+        return v
+
+    for block_name in (
+        "ws_subscription",
+        "rest_write_latency_ms",
+        "rest_rate_limit",
+        "end_to_end_loop_ms",
+    ):
+        block = getattr(results, block_name)
+        if isinstance(block, dict):
+            setattr(results, block_name, scrub_value(block))
+    if redacted_any:
+        results.notes.append("Some values were redacted by the scrub guard.")
 
 
 def _write_results(results: ProbeResults) -> None:
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "ts_utc": results.ts_utc,
-        "demo_mode": results.demo_mode,
+        "environment": "demo" if results.demo_mode else "prod",
+        "auto_publish_was": False,  # overwritten by publish step if applicable
         "ws_subscription": results.ws_subscription,
         "rest_write_latency_ms": results.rest_write_latency_ms,
         "rest_rate_limit": results.rest_rate_limit,
