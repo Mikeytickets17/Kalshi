@@ -82,65 +82,132 @@ class KalshiClient:
     def is_connected(self) -> bool:
         return self._client is not None
 
+    # Real crypto series tickers on Kalshi production (verified via
+    # discover_kalshi.py). Querying /markets by series_ticker is the only way
+    # to bypass the ~10k sports/TV/politics markets crowding out crypto.
+    CRYPTO_SERIES = (
+        "KXBTC15M",   # Bitcoin 15-minute up/down
+        "KXBTC",      # Bitcoin hourly range
+        "KXBTCD",     # Bitcoin daily above/below
+        "KXETH15M",   # Ethereum 15-minute up/down
+        "KXETH",      # Ethereum hourly range
+        "KXETHD",     # Ethereum daily above/below
+    )
+
     def get_crypto_markets(self) -> list[KalshiMarket]:
-        """Fetch open crypto price contracts from Kalshi."""
+        """Fetch open crypto price contracts from Kalshi.
+
+        Queries each crypto series by ticker. Falls back to a plain unfiltered
+        get_markets(limit=200) if every series call fails — matches the old
+        behavior so callers never see an exception.
+        """
         if not self._client:
             return []
+
+        markets: list[KalshiMarket] = []
+        seen: set[str] = set()
+
+        for series in self.CRYPTO_SERIES:
+            try:
+                raw = self._client.get_markets(series_ticker=series, limit=200)
+            except Exception as exc:
+                logger.debug("Kalshi series %s query failed: %s", series, exc)
+                continue
+
+            # pykalshi may return a list, an object with .markets, or a dict.
+            if raw is None:
+                continue
+            if hasattr(raw, "markets"):
+                raw = raw.markets or []
+            elif isinstance(raw, dict):
+                raw = raw.get("markets") or []
+
+            try:
+                iterable = list(raw)
+            except TypeError:
+                continue
+
+            for m in iterable:
+                parsed = self._parse_market_obj(m)
+                if not parsed or parsed.ticker in seen:
+                    continue
+                seen.add(parsed.ticker)
+                markets.append(parsed)
+
+        logger.info(
+            "Fetched %d crypto contracts from Kalshi (across %d series)",
+            len(markets), len(self.CRYPTO_SERIES),
+        )
+        return markets
+
+    def _parse_market_obj(self, m: Any) -> Optional[KalshiMarket]:
+        """Parse a pykalshi Market object into our KalshiMarket dataclass."""
         try:
-            raw_markets = self._client.get_markets(limit=200)
-            markets = []
-            for m in raw_markets:
-                title = str(getattr(m, 'title', '') or '').lower()
-                if not any(kw in title for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]):
-                    continue
+            ticker = str(getattr(m, "ticker", "") or "")
+            if not ticker:
+                return None
 
-                status = str(getattr(m, 'status', ''))
-                result = str(getattr(m, 'result', '') or '')
-                if status not in ('open', 'active', ''):
-                    continue
+            status = str(getattr(m, "status", "") or "").lower()
+            result = str(getattr(m, "result", "") or "").lower()
+            settled = result in ("yes", "no") or status in (
+                "settled", "finalized", "closed", "determined",
+            )
+            if settled:
+                return None
+            if status not in ("open", "active", ""):
+                return None
 
-                yes_price = getattr(m, 'yes_ask_dollars', None) or getattr(m, 'last_price_dollars', None) or 0.50
-                if isinstance(yes_price, (int, float)) and yes_price > 1:
-                    yes_price = yes_price / 100.0
-                yes_price = float(yes_price)
+            yes_price = (
+                getattr(m, "yes_ask_dollars", None)
+                or getattr(m, "last_price_dollars", None)
+                or 0.50
+            )
+            if isinstance(yes_price, (int, float)) and yes_price > 1:
+                yes_price = yes_price / 100.0
+            yes_price = float(yes_price)
 
-                close_time = str(getattr(m, 'close_time', '') or '')
-                end_ts = 0
-                if close_time:
-                    try:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
-                        end_ts = int(dt.timestamp())
-                    except (ValueError, TypeError):
-                        pass
+            close_time = str(getattr(m, "close_time", "") or "")
+            end_ts = 0
+            if close_time:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                    end_ts = int(dt.timestamp())
+                except (ValueError, TypeError):
+                    pass
 
-                ticker = str(getattr(m, 'ticker', ''))
-                full_title = str(getattr(m, 'title', '') or '')
-                asset = "BTC" if "btc" in title or "bitcoin" in title else "ETH"
-                strike = self._extract_strike(full_title)
-                direction = "above" if "above" in title or "over" in title else "below"
+            full_title = str(getattr(m, "title", "") or "")
+            subtitle = str(getattr(m, "subtitle", "") or "")
+            title_l = full_title.lower()
 
-                market = KalshiMarket(
-                    ticker=ticker,
-                    title=full_title,
-                    category="crypto",
-                    yes_price=round(yes_price, 4),
-                    no_price=round(1.0 - yes_price, 4),
-                    volume=float(getattr(m, 'volume_fp', 0) or 0),
-                    close_time_ts=end_ts,
-                    asset=asset,
-                    strike=strike,
-                    direction=direction,
-                    active=True,
-                    settled=bool(result and result.lower() in ('yes', 'no')),
-                )
-                markets.append(market)
+            asset = "BTC"
+            if ticker.startswith("KXETH") or ticker.startswith("ETH") or "ethereum" in title_l:
+                asset = "ETH"
 
-            logger.info("Fetched %d crypto contracts from Kalshi", len(markets))
-            return markets
+            strike = self._extract_strike(subtitle) or self._extract_strike(full_title)
+
+            combined = (title_l + " " + subtitle.lower())
+            direction = "below" if any(
+                w in combined for w in ("below", "under", "less than")
+            ) else "above"
+
+            return KalshiMarket(
+                ticker=ticker,
+                title=full_title,
+                category="crypto",
+                yes_price=round(yes_price, 4),
+                no_price=round(1.0 - yes_price, 4),
+                volume=float(getattr(m, "volume_fp", 0) or 0),
+                close_time_ts=end_ts,
+                asset=asset,
+                strike=strike,
+                direction=direction,
+                active=True,
+                settled=False,
+            )
         except Exception as exc:
-            logger.error("Failed to fetch Kalshi markets: %s", exc)
-            return []
+            logger.debug("Failed to parse Kalshi market: %s", exc)
+            return None
 
     def _parse_market(self, m: dict) -> Optional[KalshiMarket]:
         try:
