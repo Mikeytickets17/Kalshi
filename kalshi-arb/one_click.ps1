@@ -36,13 +36,15 @@ if (-not (Test-Path "pyproject.toml")) {
 
 # ------------- STEP 2: Pull latest code (best-effort) -------------
 Say "[1/7] Pulling latest code..." Cyan
+$parent = Split-Path -Parent $here
 try {
-    Push-Location ..
-    git pull origin claude/fix-crypto-discovery-EvvsD 2>&1 | Out-Host
-    Pop-Location
+    # git -C so we don't change directories; errors here never leave us stranded
+    git -C $parent pull origin claude/fix-crypto-discovery-EvvsD 2>&1 | Out-Host
 } catch {
     Say "  (Couldn't pull -- continuing with whatever is on disk.)" Yellow
 }
+# Defensive: always reset CWD before every subsequent step.
+Set-Location $here
 
 # ------------- STEP 3: Find the PEM file -------------
 Say ""
@@ -126,6 +128,10 @@ Say "  .env written with your Key ID + demo mode + dry-run (no publish)." Green
 # ------------- STEP 5: Install dependencies -------------
 Say ""
 Say "[4/7] Installing Python dependencies (this takes ~2 minutes)..." Cyan
+Set-Location $here   # defensive: ensure we're in the folder with pyproject.toml
+if (-not (Test-Path "pyproject.toml")) {
+    Fail "pyproject.toml not found in $(Get-Location). Something drifted the working directory."
+}
 python -m pip install --quiet --upgrade pip 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) { Fail "pip upgrade failed. Check internet." }
 
