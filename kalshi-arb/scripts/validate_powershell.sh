@@ -43,23 +43,41 @@ done
 # Bugs we've shipped once and must never ship again get a dedicated static
 # check. Failures here mean a regression to a known-bad pattern.
 for f in $(find . -name '*.ps1' -not -path './.venv/*'); do
-    python3 <<PY
-import re, sys
-src = open("$f").read()
-# Strip comments so we don't trip on doc references
+    PS_FILE="$f" python3 <<'PY'
+import os, re, sys
+f = os.environ["PS_FILE"]
+src = open(f).read()
 no_comments = re.sub(r'(?m)^\s*#.*$', '', src)
 
-# Antipattern: Push-Location inside a try {} whose catch{} does not Pop.
+# Antipattern 1: Push-Location inside a try {} whose catch{} does not Pop.
 # On Windows PS 5.1 this strands cwd if an external command writes to stderr
-# with \$ErrorActionPreference=Stop. The operator hit this exact bug on
-# one_click.ps1 during Push #1 setup. Do not reintroduce.
+# with $ErrorActionPreference=Stop.
 for m in re.finditer(r'try\s*\{([^}]*)\}\s*catch\s*\{([^}]*)\}', no_comments, re.DOTALL):
     try_body, catch_body = m.group(1), m.group(2)
     if 'Push-Location' in try_body and 'Pop-Location' not in catch_body:
-        print(f"[FAIL] {('$f')}: Push-Location in try{{}} without matching Pop-Location in catch{{}} "
+        print(f"[FAIL] {f}: Push-Location in try{{}} without matching Pop-Location in catch{{}} "
               f"(or missing try/finally). Use 'git -C <path>' or wrap in try/finally.")
         sys.exit(1)
-print(f"[OK]   $f antipatterns")
+
+# Antipattern 2: $ErrorActionPreference="Stop" set unconditionally at top
+# level, combined with external commands (git/pip/pytest/python). Stop
+# treats stderr progress lines as terminating errors -- pip writes PATH
+# warnings that killed the script twice already.
+toplevel_stop = re.search(
+    r'(?m)^\s*\$(?:global:)?ErrorActionPreference\s*=\s*[\'"]Stop[\'"]',
+    no_comments,
+)
+external_cmds = re.findall(
+    r'(?m)^\s*(?:python|pip|pytest|git|notepad)\b[^\n]*',
+    no_comments,
+)
+if toplevel_stop and external_cmds:
+    print(f'[FAIL] {f}: top-level $ErrorActionPreference="Stop" with external commands '
+          f'({len(external_cmds)} found). stderr progress/warning lines will be treated as errors.')
+    print('       Fix: use $ErrorActionPreference="Continue" and check $LASTEXITCODE after each call.')
+    sys.exit(1)
+
+print(f"[OK]   {f} antipatterns")
 PY
 done
 

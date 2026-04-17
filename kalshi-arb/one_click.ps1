@@ -2,7 +2,12 @@
 #
 # This is run from ONE_CLICK.bat so the user never has to open PowerShell directly.
 
-$ErrorActionPreference = "Stop"
+# Do NOT use "Stop" globally. External commands (git, pip, pytest, python)
+# routinely write progress and warnings to stderr. With Stop, any stderr
+# line becomes a terminating error -- which crashed both the git-pull step
+# and pip install in earlier versions of this file. Use Continue and rely
+# on explicit $LASTEXITCODE checks after every external invocation.
+$ErrorActionPreference = "Continue"
 
 function Say($text, $color = "White") {
     Write-Host $text -ForegroundColor $color
