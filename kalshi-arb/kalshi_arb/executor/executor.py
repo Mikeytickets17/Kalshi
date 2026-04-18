@@ -67,7 +67,19 @@ class StructuralArbExecutor:
         self.killswitch = killswitch
         self.degraded = degraded_monitor
         self.config = config or ExecutorConfig()
+        # Two separate counters per review Flag 1:
+        # - realized_pnl: ONLY pnl_confidence='realized' outcomes count here.
+        #   This is the number that feeds the daily loss limit trip.
+        # - estimated_pnl: tracks estimated-with-unwind outcomes separately
+        #   for audit + dashboard display. Gets reconciled into
+        #   realized_pnl only when the future settlement-watcher module
+        #   matches fills to market resolutions.
+        # Crucially, estimated_pnl MUST NOT leak into realized_pnl. A future
+        # refactor that accidentally unifies these two counters would
+        # silently corrupt the daily-loss-limit trip -- hence the strong
+        # assertions in test_estimated_unwind_*.
         self._daily_realized_pnl_cents: int = 0
+        self._daily_estimated_pnl_cents: int = 0
         self._last_exec_ms: int = 0
 
     # ---------- main entry ----------
@@ -158,19 +170,31 @@ class StructuralArbExecutor:
             # them on the OrderResponse. We already summed via response objects.
             pass
 
-        # Update daily P&L counter ONLY for realized outcomes.
-        if pnl_confidence == PNL_REALIZED and net_fill is not None:
-            # Structural arb P&L per contract = 100 - cost - fees (per pair).
-            # Here we express as total: contracts × 100 - net_fill - fees.
+        # P&L accounting. Two strict rules (review Flag 1):
+        #   A) realized counter accepts ONLY pnl_confidence='realized'.
+        #   B) estimated counter accepts ONLY pnl_confidence='estimated_with_unwind'.
+        # Any other outcome touches NEITHER counter. This prevents the
+        # landmine of _signed_net_fill=0 placeholder values silently
+        # rolling into either audit trail.
+        if net_fill is not None:
             total_contracts = legs[0].filled_count + legs[1].filled_count
-            total_pnl = total_contracts // 2 * 100 - net_fill - total_fees
-            self._daily_realized_pnl_cents += total_pnl
-            # Auto-trip on breach.
-            if self._daily_realized_pnl_cents <= -self.config.daily_loss_limit_cents:
-                self.killswitch.trip(
-                    f"daily_loss_limit: realized P&L {self._daily_realized_pnl_cents}c "
-                    f"<= -{self.config.daily_loss_limit_cents}c"
-                )
+            pairs = total_contracts // 2  # one 'pair' = one YES + one NO = $1 at settlement
+            if pnl_confidence == PNL_REALIZED:
+                total_pnl = pairs * 100 - net_fill - total_fees
+                self._daily_realized_pnl_cents += total_pnl
+                if self._daily_realized_pnl_cents <= -self.config.daily_loss_limit_cents:
+                    self.killswitch.trip(
+                        f"daily_loss_limit: realized P&L {self._daily_realized_pnl_cents}c "
+                        f"<= -{self.config.daily_loss_limit_cents}c"
+                    )
+            elif pnl_confidence == PNL_ESTIMATED_WITH_UNWIND:
+                # Conservative estimate for dashboard/audit -- does NOT affect
+                # the trip. Will be reconciled into realized by the
+                # settlement-watcher module when fills are matched to market
+                # resolutions. Kept separate so the audit trail clearly
+                # distinguishes "we know this P&L" from "we estimate this P&L".
+                est_pnl = pairs * 100 - net_fill - total_fees
+                self._daily_estimated_pnl_cents += est_pnl
 
         self._last_exec_ms = clock.now_ms()
         if self.degraded is not None:
@@ -359,7 +383,15 @@ class StructuralArbExecutor:
 
     @property
     def daily_realized_pnl_cents(self) -> int:
+        """ONLY pnl_confidence='realized' outcomes. Feeds the loss-limit trip."""
         return self._daily_realized_pnl_cents
+
+    @property
+    def daily_estimated_pnl_cents(self) -> int:
+        """ONLY pnl_confidence='estimated_with_unwind' outcomes. Dashboard
+        read-only -- does NOT feed the loss-limit trip. Gets reconciled
+        into realized by the settlement-watcher module (future push)."""
+        return self._daily_estimated_pnl_cents
 
 
 def _signed_net_fill(*legs: LegResult) -> int:

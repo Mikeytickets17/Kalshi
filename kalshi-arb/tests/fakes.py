@@ -137,3 +137,40 @@ def policy_unwind_never_fills(req: OrderRequest) -> OrderResponse:
         fees_cents=0,
         error="unwind_rejected",
     )
+
+
+@dataclass
+class FakeKalshiAPIWithHangingUnwind(FakeKalshiAPI):
+    """Variant of FakeKalshiAPI whose unwind (sell) orders HANG via
+    asyncio.sleep(very_long_time), not return an error. Used to
+    exercise the genuine asyncio.wait_for timeout path and prove the
+    executor releases its pending task cleanly (review Flag 2)."""
+
+    hang_seconds: float = 30.0
+
+    async def place_order(self, req: OrderRequest) -> OrderResponse:
+        if req.client_order_id in self._dedupe_cache:
+            return self._dedupe_cache[req.client_order_id]
+        if req.action == "sell":
+            # Genuine hang: sleep longer than any reasonable unwind timeout.
+            await asyncio.sleep(self.hang_seconds)
+            # This line is unreachable when wait_for cancels us.
+            resp = OrderResponse(
+                kalshi_order_id=None,
+                client_order_id=req.client_order_id,
+                filled_count=0,
+                requested_count=req.count,
+                avg_fill_price_cents=0,
+                fees_cents=0,
+                error="unreachable_fake_response",
+            )
+        else:
+            # Buy legs behave like policy_yes_fills_no_rejects so the
+            # executor ends up in the unwind path.
+            if req.side == "yes":
+                resp = policy_both_fill_fully(req)
+            else:
+                resp = policy_both_reject(req)
+        self.placed_orders.append(req)
+        self._dedupe_cache[req.client_order_id] = resp
+        return resp

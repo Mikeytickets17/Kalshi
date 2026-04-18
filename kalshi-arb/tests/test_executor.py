@@ -31,6 +31,7 @@ from kalshi_arb.sizer import BankrollSnapshot, SizingDecision
 
 from tests.fakes import (
     FakeKalshiAPI,
+    FakeKalshiAPIWithHangingUnwind,
     policy_both_fill_fully,
     policy_both_reject,
     policy_partial_imbalance,
@@ -204,6 +205,8 @@ def test_unwind_at_market_on_leg_failure(killswitch: KillSwitch) -> None:
 def test_unwind_failure_writes_sentinel_and_trips_killswitch(
     killswitch: KillSwitch, tmp_path: Path
 ) -> None:
+    """Fast path: fake returns an error response -> executor treats as
+    unwind failure. Covers the 'API says no' class of failure."""
     api = FakeKalshiAPI(fill_policy=policy_unwind_never_fills)
     executor = _make_executor(
         api, killswitch, unwind_timeout_sec=1.0, critical_unwind_dir=tmp_path
@@ -221,6 +224,62 @@ def test_unwind_failure_writes_sentinel_and_trips_killswitch(
     assert "TICKER: KXTEST-1" in body
     assert "SIDE: yes" in body
     assert "OUTSTANDING_CONTRACTS: 5" in body
+
+
+def test_unwind_genuine_timeout_releases_resources(
+    killswitch: KillSwitch, tmp_path: Path
+) -> None:
+    """Slow path (review Flag 2): the unwind HTTP call genuinely hangs
+    past the timeout. Proves:
+      1. asyncio.wait_for actually fires
+      2. UnwindFailed is raised + sentinel + kill switch tripped
+      3. No leaked asyncio Tasks after the timeout returns
+
+    This catches the bug class where wait_for returns but the underlying
+    place_order coroutine is still pending in the loop. In production a
+    hung HTTP request that never terminates would leak task objects on
+    every unwind, eventually OOMing the process.
+    """
+
+    async def _run_and_count_leaks() -> tuple[object, set[asyncio.Task]]:
+        # Take a baseline snapshot of active tasks BEFORE we do anything.
+        baseline_tasks = {t for t in asyncio.all_tasks() if not t.done()}
+        # hang_seconds = 30 so it will still be hung when we measure.
+        api = FakeKalshiAPIWithHangingUnwind(
+            fill_policy=policy_yes_fills_no_rejects,  # unused; method is overridden
+            hang_seconds=30.0,
+        )
+        executor = _make_executor(
+            api, killswitch, unwind_timeout_sec=0.5, critical_unwind_dir=tmp_path
+        )
+        result = await executor.execute(_decision(_opp(), contracts=5))
+
+        # Give the event loop one iteration to actually process task cancellation
+        # triggered by wait_for's timeout path.
+        await asyncio.sleep(0.1)
+        now_tasks = {
+            t for t in asyncio.all_tasks() if not t.done()
+        } - {asyncio.current_task()}
+        new_tasks = now_tasks - baseline_tasks
+        return result, new_tasks
+
+    result, leaked = asyncio.run(_run_and_count_leaks())
+
+    # 1. Timeout actually fired + outcome is unwind_failed.
+    assert result.outcome == OUTCOME_UNWIND_FAILED
+    # 2. Sentinel + kill switch.
+    assert killswitch.is_tripped()
+    sentinels = list(tmp_path.glob("CRITICAL_UNWIND_FAILED_*.txt"))
+    assert len(sentinels) == 1
+    body = sentinels[0].read_text()
+    assert "timeout" in body.lower()
+    # 3. Task-leak check. The wait_for timeout cancels the inner
+    # place_order coroutine; by the time we measure, it must be gone.
+    assert leaked == set(), (
+        f"Executor leaked {len(leaked)} pending tasks after unwind timeout. "
+        f"asyncio.wait_for should cancel the inner coroutine cleanly. "
+        f"Leaked: {[t.get_name() for t in leaked]}"
+    )
 
 
 # -------- (6) Kill switch short-circuits ------------------------------
@@ -285,17 +344,37 @@ def test_estimated_unwind_does_not_count_toward_daily_limit(
     killswitch: KillSwitch,
 ) -> None:
     """Chained unwinds with hypothetical large estimated losses must NOT
-    trip the daily loss limit -- only 'realized' counts."""
+    trip the daily loss limit -- only 'realized' counts.
+
+    Review Flag 1 strong assertion: the running realized counter must
+    STAY EXACTLY 0, not just 'not cross the trip threshold'. A regression
+    that folded estimated P&L into the realized counter (e.g. accidentally
+    unifying the two fields) would show up here."""
     api = FakeKalshiAPI(fill_policy=policy_yes_fills_no_rejects)
+    # Each unwind event creates a different opp timestamp so FakeKalshiAPI
+    # doesn't dedupe; construct unique opps per iteration.
     executor = _make_executor(api, killswitch, daily_loss_limit_cents=100)  # $1
 
-    # Fire many half-fill trades (each results in unwind, confidence=estimated).
-    for _ in range(20):
-        result = asyncio.run(executor.execute(_decision(_opp(), contracts=5)))
+    for i in range(20):
+        opp = _opp(detected_ts_ms=1_700_000_000_000 + i)
+        result = asyncio.run(executor.execute(_decision(opp, contracts=5)))
         assert result.pnl_confidence == PNL_ESTIMATED_WITH_UNWIND
 
-    # Even with 20 unwinds, the realized counter is untouched, kill switch not tripped.
-    assert executor.daily_realized_pnl_cents == 0
+    # HARD requirement: realized counter is PRECISELY 0, not just "not
+    # past the trip". Any non-zero value would indicate estimated rows
+    # leaked into the realized counter.
+    assert executor.daily_realized_pnl_cents == 0, (
+        f"Realized counter should be exactly 0 (unwinds are estimated, "
+        f"not realized), got {executor.daily_realized_pnl_cents}c. "
+        f"Estimated P&L is leaking into the realized tally -- daily-loss-"
+        f"limit trip will fire on the wrong number."
+    )
+    # The estimated counter DID move -- proving unwinds were counted
+    # somewhere, just not in the trip-relevant bucket.
+    assert executor.daily_estimated_pnl_cents != 0, (
+        "Estimated counter should reflect unwind outcomes for audit/dashboard. "
+        "It's at 0 -- the split-counter logic isn't wired up at all."
+    )
     assert not killswitch.is_tripped()
 
 
