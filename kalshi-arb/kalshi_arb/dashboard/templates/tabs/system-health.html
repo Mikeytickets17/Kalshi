@@ -2,16 +2,33 @@
 {% block title %}System Health — kalshi-arb{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold text-slate-100">System Health</h1>
-<p class="text-slate-400 text-sm mt-1">Infrastructure heartbeat. Replica lag tile wires in step 3.</p>
+<p class="text-slate-400 text-sm mt-1">Infrastructure heartbeat. Replica lag + SSE subscriber count are live; the rest populates in later steps.</p>
+
+<div id="replica-warning-banner"
+     class="hidden mt-4 rounded border border-red-700 bg-red-900/40 px-3 py-2 text-sm text-red-200">
+  Replica lag &gt; 5 s — dashboard may be showing stale data.
+</div>
 
 <section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">Replica lag</div>
+    <div id="hc-replica-lag" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+    <div class="mt-1 text-xs text-slate-600">local SQLite = always 0; Turso replica in live mode.</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">SSE subscribers</div>
+    <div id="hc-sse-subs" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+    <div class="mt-1 text-xs text-slate-600">open browser connections.</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">Events published</div>
+    <div id="hc-sse-published" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+    <div class="mt-1 text-xs text-slate-600">total since dashboard started.</div>
+  </div>
   {% for label, note in [
-    ("Replica lag", "Turso embedded replica vs primary. Warning if >5s."),
-    ("Event-store writes", "Queue depth + dropped counter."),
     ("WS shards", "Connection state + message rate per shard."),
     ("Latest probe", "detected_limits.yaml ts + environment."),
     ("CRITICAL_UNWIND_FAILED", "Sentinel files in last 7 days."),
-    ("Kill switch history", "Trip/reset events in last 7 days."),
   ] %}
     <div class="rounded border border-slate-800 bg-slate-950 p-4">
       <div class="text-xs text-slate-500">{{ label }}</div>
@@ -20,4 +37,35 @@
     </div>
   {% endfor %}
 </section>
+
+<script>
+// Poll /healthz every 3 s and fill the live tiles. The main SSE stream
+// is carrying change_log events; replica lag and broker stats are low-
+// churn scalars so periodic polling is simpler than a dedicated channel.
+(function () {
+  async function refresh() {
+    try {
+      const r = await fetch("/healthz", {credentials: "same-origin"});
+      const j = await r.json();
+      const lag = j.replica_lag_ms;
+      const banner = document.getElementById("replica-warning-banner");
+      const lagEl = document.getElementById("hc-replica-lag");
+      if (lag === null || lag === undefined) {
+        lagEl.textContent = "—";
+        banner.classList.add("hidden");
+      } else {
+        lagEl.textContent = `${lag} ms`;
+        if (lag > 5000) banner.classList.remove("hidden");
+        else banner.classList.add("hidden");
+      }
+      if (j.sse) {
+        document.getElementById("hc-sse-subs").textContent = j.sse.subscribers;
+        document.getElementById("hc-sse-published").textContent = j.sse.published_total;
+      }
+    } catch (e) { /* network hiccup; next tick retries */ }
+  }
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
 {% endblock %}

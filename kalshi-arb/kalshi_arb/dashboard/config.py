@@ -32,7 +32,17 @@ class DashboardConfig:
     # Rate limiting
     login_rate_per_min_per_ip: int
 
-    # Data backend (wired in step 3; noop in step 2)
+    # Data source: path to the SQLite event store the bot is writing to.
+    # Paper phase: both processes run on the same laptop, point here.
+    # Live phase: swapped for Turso via LIBSQL_* (below).
+    event_store_path: Path
+
+    # If True, on dashboard startup the change-capture task replays ALL
+    # existing change_log rows to newly-connected clients. Default False
+    # (live-from-now-forward). Flip True for local debugging only.
+    replay_backlog_on_start: bool
+
+    # Live-migration fields (unused in paper phase; see docs/turso-setup.md)
     libsql_url: str
     libsql_auth_token: str
     libsql_sync_url: str
@@ -47,23 +57,24 @@ class DashboardConfig:
             # or default password to become live.
             raise RuntimeError(
                 "DASHBOARD_PASSWORD is not set. The dashboard refuses to "
-                "start without an explicit password. Set it via "
-                "`fly secrets set DASHBOARD_PASSWORD=<strong-password>` or "
-                "export it for local testing."
+                "start without an explicit password. Set it via the "
+                "launcher (auto-generated into .dashboard_creds on first "
+                "run) or export it for local testing."
             )
         session_secret = _env("DASHBOARD_SESSION_SECRET")
         if not session_secret:
             # Generate one at startup. This is fine for single-instance
-            # deployments (fly machine restart = all sessions invalidated,
-            # operator logs in again). For multi-instance or zero-downtime
-            # rollout the operator must set this explicitly.
+            # deployments -- process restart invalidates all sessions and
+            # the operator logs in again.
             session_secret = secrets.token_urlsafe(48)
         return DashboardConfig(
             username=_env("DASHBOARD_USERNAME", "admin"),
             password=password,
             session_secret=session_secret,
-            port=_env_int("PORT", 8080),   # Fly sets PORT env var automatically
+            port=_env_int("PORT", 8080),
             login_rate_per_min_per_ip=_env_int("DASHBOARD_LOGIN_RATE", 60),
+            event_store_path=Path(_env("EVENT_STORE_PATH", "./data/kalshi.db")),
+            replay_backlog_on_start=(_env("DASHBOARD_REPLAY_BACKLOG", "").lower() in ("1", "true", "yes")),
             libsql_url=_env("LIBSQL_URL"),
             libsql_auth_token=_env("LIBSQL_AUTH_TOKEN"),
             libsql_sync_url=_env("LIBSQL_SYNC_URL"),

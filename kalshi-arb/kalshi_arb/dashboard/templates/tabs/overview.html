@@ -2,21 +2,27 @@
 {% block title %}Overview — kalshi-arb{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold text-slate-100">Overview</h1>
-<p class="text-slate-400 text-sm mt-1">At-a-glance bot status. Tiles and live chart wire up in step 5.</p>
+<p class="text-slate-400 text-sm mt-1">At-a-glance bot status. Tiles and live chart wire up in step 5; the "SSE live" tiles below update every time a row lands in change_log.</p>
 
 <section class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
   <div class="text-sm text-slate-400">Bot status</div>
   <div id="bot-status" class="mt-1 text-2xl font-bold text-amber-400">AWAITING DATA LAYER</div>
-  <div class="mt-1 text-xs text-slate-500">Step 3 wires Turso change-capture; tiles begin filling then.</div>
+  <div class="mt-1 text-xs text-slate-500">Bot run produces change_log rows; the three tiles below animate on every event.</div>
 </section>
 
 <section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-  {% for label in ["Daily realized P&L", "Daily estimated P&L", "Opportunities today"] %}
-    <div class="rounded border border-slate-800 bg-slate-950 p-4">
-      <div class="text-xs text-slate-500">{{ label }}</div>
-      <div class="mt-1 text-2xl font-mono text-slate-400">—</div>
-    </div>
-  {% endfor %}
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">Latest opportunity</div>
+    <div id="latest-opportunity" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">Latest execution</div>
+    <div id="latest-execution" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500">Kill switch last event</div>
+    <div id="latest-kill-switch" class="mt-1 text-2xl font-mono text-slate-400">—</div>
+  </div>
 </section>
 
 <section class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
@@ -25,4 +31,12 @@
     chart placeholder — wires to Chart.js in step 6
   </div>
 </section>
+
+<script type="application/json" id="sse-handlers">
+{
+  "opportunity": {"target": "latest-opportunity", "label": "opportunity"},
+  "execution":   {"target": "latest-execution", "label": "execution"},
+  "kill_switch": {"target": "latest-kill-switch", "label": "kill_switch"}
+}
+</script>
 {% endblock %}

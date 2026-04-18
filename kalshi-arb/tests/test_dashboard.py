@@ -22,31 +22,33 @@ from kalshi_arb.dashboard.config import DashboardConfig
 
 
 @pytest.fixture
-def config() -> DashboardConfig:
+def config(tmp_path) -> DashboardConfig:
+    from pathlib import Path
     return DashboardConfig(
         username="admin",
         password="hunter2-test",
         session_secret="test-secret-do-not-ship",
         port=8080,
         login_rate_per_min_per_ip=5,
+        event_store_path=tmp_path / "dash-step2.db",
+        replay_backlog_on_start=False,
         libsql_url="",
         libsql_auth_token="",
         libsql_sync_url="",
-        libsql_local_path=__import__("pathlib").Path("/tmp/unused-for-step-2.db"),
+        libsql_local_path=Path("/tmp/unused-for-step-2.db"),
     )
 
 
 @pytest.fixture
-def client(config: DashboardConfig) -> TestClient:
-    # base_url="https://testserver" so httpx's cookie jar persists our
-    # Secure-flagged session cookie across requests. The app itself
-    # always sets Secure=True -- we're just making the test client
-    # speak HTTPS so that policy doesn't drop the cookie in transit.
-    return TestClient(
+def client(config: DashboardConfig):
+    """TestClient as context manager -- required to run the FastAPI
+    lifespan (which populates app.state.{store,broker,capture})."""
+    with TestClient(
         create_app(config),
         follow_redirects=False,
         base_url="https://testserver",
-    )
+    ) as c:
+        yield c
 
 
 # ---- /healthz is public ----
@@ -57,7 +59,7 @@ def test_healthz_returns_200_without_auth(client: TestClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["step"] == 2
+    assert body["step"] == 3
 
 
 # ---- / redirects based on session presence ----
@@ -143,15 +145,14 @@ def test_logout_clears_session_cookie(client: TestClient) -> None:
 
 def test_login_rate_limit_blocks_after_threshold(config: DashboardConfig) -> None:
     """config.login_rate_per_min_per_ip=5 -> 6th attempt returns 429."""
-    c = TestClient(
+    with TestClient(
         create_app(config), follow_redirects=False, base_url="https://testserver"
-    )
-    for _ in range(config.login_rate_per_min_per_ip):
+    ) as c:
+        for _ in range(config.login_rate_per_min_per_ip):
+            r = c.post("/login", data={"username": "admin", "password": "wrong"})
+            assert r.status_code == 303
         r = c.post("/login", data={"username": "admin", "password": "wrong"})
-        assert r.status_code == 303
-    # Next attempt crosses the threshold.
-    r = c.post("/login", data={"username": "admin", "password": "wrong"})
-    assert r.status_code == 429
+        assert r.status_code == 429
 
 
 # ---- Config refuses to start without DASHBOARD_PASSWORD ----
