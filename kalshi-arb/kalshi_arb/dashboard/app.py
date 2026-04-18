@@ -166,9 +166,21 @@ def create_app(
         broker: SSEBroker | None = getattr(request.app.state, "broker", None)
         capture: ChangeCapture | None = getattr(request.app.state, "capture", None)
         body: dict = {"status": "ok", "version": "0.1.0", "step": 3}
+        # Surface the absolute path the dashboard is reading from so the
+        # verifier (a separate process) can confirm it is opening the
+        # same file. A mismatch here is the smoking gun for "writes go
+        # in, reads see nothing" -- which has bitten step 3 twice.
+        body["event_store_path"] = str(cfg.event_store_path)
         if store_ref is not None:
             body["replica_lag_ms"] = store_ref.replica_lag_ms()
             body["store_stats"] = store_ref.stats()
+            # Total rows currently visible to the dashboard's connection.
+            # The verifier compares this to its own count to detect WAL
+            # visibility issues separately from path mismatch.
+            try:
+                body["change_log_count"] = store_ref.change_log_count()
+            except Exception as exc:  # noqa: BLE001
+                body["change_log_count_error"] = str(exc)
         if broker is not None:
             body["sse"] = broker.stats()
         if capture is not None:

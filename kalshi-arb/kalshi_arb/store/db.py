@@ -185,6 +185,14 @@ class EventStore:
             (since_id, limit),
         )
 
+    def change_log_count(self) -> int:
+        """Total rows currently visible in change_log on this connection.
+        Used by /healthz so a separate verifier process can compare its
+        own count to the dashboard's, isolating WAL-visibility issues
+        from path-mismatch issues."""
+        rows = self.read_many("SELECT COUNT(*) FROM change_log", ())
+        return int(rows[0][0]) if rows else 0
+
     def replica_lag_ms(self) -> int | None:
         """Exposed on the System Health tab. See backend.py docstring."""
         primary = self._backend.primary_last_write_ms()

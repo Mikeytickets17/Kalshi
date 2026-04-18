@@ -77,9 +77,11 @@ async def _verify(url: str, password: str, repo: Path) -> int:
         base_url=url, follow_redirects=False, timeout=timeout
     ) as client:
         # ---- 1) /healthz publicly reachable ----
+        dashboard_health: dict = {}
         try:
             r = await client.get("/healthz")
-            ok = r.status_code == 200 and r.json().get("status") == "ok"
+            dashboard_health = r.json() if r.status_code == 200 else {}
+            ok = r.status_code == 200 and dashboard_health.get("status") == "ok"
             _check("Tunnel reachable + /healthz returns 200",
                    ok, f"status={r.status_code}")
             if not ok:
@@ -89,6 +91,41 @@ async def _verify(url: str, password: str, repo: Path) -> int:
                    False, f"exception: {exc}")
             failures.append("/healthz")
             return 1  # nothing else can work
+
+        # ---- 1b) Dashboard's event-store path matches the verifier's ----
+        from .._paths import default_event_store_path
+        verifier_path = default_event_store_path()
+        dashboard_path_str = dashboard_health.get("event_store_path") or ""
+        if dashboard_path_str:
+            try:
+                dashboard_path = Path(dashboard_path_str).resolve()
+            except Exception:
+                dashboard_path = Path(dashboard_path_str)
+            paths_match = dashboard_path == verifier_path.resolve()
+            _check(
+                "Dashboard and verifier point at the same SQLite file",
+                paths_match,
+                f"dashboard={dashboard_path} verifier={verifier_path}",
+            )
+            if not paths_match:
+                failures.append("path-mismatch")
+                print()
+                print("  --> The dashboard process is reading a DIFFERENT")
+                print("      file from the verifier.  Most likely cause: the")
+                print("      dashboard was started in a different working")
+                print("      directory before the path-fix shipped.  Stop")
+                print("      the launcher window (close it / Ctrl+C) and")
+                print("      double-click start_dashboard.bat again so the")
+                print("      new code picks up the shared absolute path.")
+                print()
+        else:
+            _check(
+                "Dashboard and verifier point at the same SQLite file",
+                False,
+                "dashboard /healthz did not include event_store_path -- "
+                "old dashboard build still running; restart the launcher.",
+            )
+            failures.append("path-mismatch")
 
         # ---- 2) Login over HTTPS ----
         try:
@@ -195,6 +232,39 @@ async def _verify(url: str, password: str, repo: Path) -> int:
                f"saw {new_count} new events with ids {new_ids[:5]}{'...' if new_count > 5 else ''}")
         if not ok:
             failures.append("e2e")
+            # Diagnostic: ask the dashboard how many change_log rows IT
+            # currently sees on its connection.  If the count is 0 (or
+            # equals the pre-insert count), the dashboard's connection
+            # isn't seeing the verifier's writes -- typically a Windows
+            # WAL visibility issue or a stale dashboard process.
+            try:
+                r2 = await client.get("/healthz")
+                hb = r2.json() if r2.status_code == 200 else {}
+                d_count = hb.get("change_log_count")
+                v_count: int | None
+                try:
+                    v_store = EventStore(SqliteBackend(verifier_path))
+                    v_store.connect()
+                    v_count = v_store.change_log_count()
+                    v_store.backend.close()
+                except Exception as exc:  # noqa: BLE001
+                    v_count = None
+                    print(f"  diag: verifier could not read its own count: {exc}")
+                print()
+                print(f"  diag: dashboard sees {d_count} rows in change_log")
+                print(f"  diag: verifier  sees {v_count} rows in change_log")
+                if d_count == 0 and (v_count or 0) > 0:
+                    print("  --> Path was OK but dashboard's connection")
+                    print("      sees none of the writes.  Restart the")
+                    print("      launcher window so its DB connection")
+                    print("      reopens against the WAL-mode file.")
+                elif d_count == v_count and (d_count or 0) > 0:
+                    print("  --> Both processes see the rows but the SSE")
+                    print("      pipeline isn't surfacing them.  Likely")
+                    print("      the change-capture task is stuck or the")
+                    print("      /events/poll auth/path is broken.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  diag: failed to fetch /healthz for diagnostics: {exc}")
 
     print()
     print("=" * 70)
