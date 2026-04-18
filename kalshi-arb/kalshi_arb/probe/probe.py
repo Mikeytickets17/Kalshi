@@ -139,11 +139,14 @@ async def probe_rest_write_latency(rest: RestClient, ticker: str, samples: int =
     """Fire non-filling demo orders and measure placement round-trip.
 
     Uses a price of 1¢ on YES so no marketable cross happens. Immediately
-    cancels every order after placement.
+    cancels every order after placement. Captures the first 5 distinct
+    errors so we can see WHY failures happen, not just count them.
     """
+    from ..common.errors import ErrorCapture
+
     _log.info("probe.rest_write.start", samples=samples, ticker=ticker)
     latencies_ms: list[float] = []
-    errors = 0
+    errors = ErrorCapture(max_unique=5)
 
     for i in range(samples):
         t0 = time.monotonic()
@@ -160,27 +163,32 @@ async def probe_rest_write_latency(rest: RestClient, ticker: str, samples: int =
             )
             latency_ms = (time.monotonic() - t0) * 1000
             latencies_ms.append(latency_ms)
+            errors.record_success()
             order_id = getattr(resp, "order_id", None) or (
                 resp.get("order_id") if isinstance(resp, dict) else None
             )
         except Exception as exc:  # noqa: BLE001
-            errors += 1
-            _log.warning("probe.rest_write.error", iter=i, error=str(exc))
+            errors.record(exc, context={"iter": i, "ticker": ticker, "action": "buy", "yes_price": 1})
         finally:
             if order_id:
                 try:
                     await asyncio.to_thread(rest.underlying.cancel_order, order_id=order_id)
                 except Exception:  # noqa: BLE001, S110
                     pass
-        # Throttle to ~5 req/s to keep the probe civil.
         await asyncio.sleep(0.2)
 
     if not latencies_ms:
-        return {"samples": samples, "errors": errors, "note": "all requests failed"}
+        return {
+            "samples": samples,
+            "successful": 0,
+            "errors_summary": errors.to_dict(),
+            "note": "all requests failed -- see errors_summary.samples for cause",
+        }
     latencies_ms.sort()
     return {
         "samples": len(latencies_ms),
-        "errors": errors,
+        "successful": len(latencies_ms),
+        "errors_summary": errors.to_dict(),
         "p50_ms": round(statistics.median(latencies_ms), 1),
         "p95_ms": round(latencies_ms[int(0.95 * len(latencies_ms)) - 1], 1),
         "p99_ms": round(latencies_ms[int(0.99 * len(latencies_ms)) - 1], 1),
@@ -189,31 +197,46 @@ async def probe_rest_write_latency(rest: RestClient, ticker: str, samples: int =
 
 
 async def probe_rest_rate_limit(rest: RestClient) -> dict[str, Any]:
-    """Ramp GET /exchange/status rate until 429.
+    """Ramp request rate until 429 against a known-working endpoint.
 
-    We try 1, 2, 5, 10, 20, 40 req/s in 3-second bursts. First burst that
-    produces a 429 is recorded as the ceiling.
+    We hit GET /markets?limit=1 (confirmed to work on both demo + prod for
+    every auth tier). Previously used /exchange/status but that endpoint is
+    not exposed on demo and every call 404s, poisoning the result.
+
+    Ramps 1, 2, 5, 10, 20, 40 req/s in 3-second bursts. First burst that
+    produces a 429 is recorded as the ceiling. Errors are captured with
+    status code + message so non-429 failures (auth, network) are visible.
     """
+    from ..common.errors import ErrorCapture
+
     _log.info("probe.rest_ratelimit.start")
-    result: dict[str, Any] = {"rates_tested": [], "limit_hit_at_rps": None, "retry_after_sec": None}
+    errors = ErrorCapture(max_unique=5)
+    result: dict[str, Any] = {
+        "endpoint": "/markets?limit=1",
+        "rates_tested": [],
+        "limit_hit_at_rps": None,
+        "retry_after_sec": None,
+        "errors_summary": None,
+    }
     rates = [1, 2, 5, 10, 20, 40]
     for rps in rates:
         burst_duration = 3.0
         sleep = 1.0 / rps
-        errors = 0
+        e_count = 0
         ok = 0
         retry_after: float | None = None
         t_start = time.monotonic()
         while time.monotonic() - t_start < burst_duration:
             t0 = time.monotonic()
             try:
-                await asyncio.to_thread(rest.underlying.get_exchange_status)
+                await asyncio.to_thread(rest.underlying.get_markets, limit=1, fetch_all=False)
                 ok += 1
+                errors.record_success()
             except Exception as exc:  # noqa: BLE001
-                errors += 1
+                e_count += 1
+                errors.record(exc, context={"rps": rps, "endpoint": "/markets?limit=1"})
                 msg = str(exc)
                 if "429" in msg:
-                    # Try to extract Retry-After if present.
                     import re
 
                     m = re.search(r"retry[_\- ]after[:=]\s*(\d+(?:\.\d+)?)", msg, re.IGNORECASE)
@@ -225,11 +248,12 @@ async def probe_rest_rate_limit(rest: RestClient) -> dict[str, Any]:
             elapsed = time.monotonic() - t0
             if elapsed < sleep:
                 await asyncio.sleep(sleep - elapsed)
-        result["rates_tested"].append({"rps": rps, "ok": ok, "errors": errors})
-        _log.info("probe.rest_ratelimit.step", rps=rps, ok=ok, errors=errors)
+        result["rates_tested"].append({"rps": rps, "ok": ok, "errors": e_count})
+        _log.info("probe.rest_ratelimit.step", rps=rps, ok=ok, errors=e_count)
         if result["limit_hit_at_rps"] is not None:
             break
-        await asyncio.sleep(2.0)  # cool-down between bursts
+        await asyncio.sleep(2.0)
+    result["errors_summary"] = errors.to_dict()
     return result
 
 
