@@ -84,8 +84,10 @@ async def _insert_one(store: EventStore, rng: random.Random, i: int) -> None:
 
 
 async def run(count: int, rate: float, duration: float) -> None:
-    path = Path(os.environ.get("EVENT_STORE_PATH", "./data/kalshi.db"))
-    print(f"[simulate] event store: {path.resolve()}")
+    from .._paths import default_event_store_path
+
+    path = default_event_store_path()
+    print(f"[simulate] event store: {path}")
 
     store = EventStore(SqliteBackend(path))
     await store.start()

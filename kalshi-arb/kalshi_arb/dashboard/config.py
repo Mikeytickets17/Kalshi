@@ -7,6 +7,8 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
+from .._paths import default_event_store_path as _default_event_store_path
+
 
 def _env(key: str, default: str | None = None) -> str:
     return os.environ.get(key, default) or ""
@@ -73,7 +75,10 @@ class DashboardConfig:
             session_secret=session_secret,
             port=_env_int("PORT", 8080),
             login_rate_per_min_per_ip=_env_int("DASHBOARD_LOGIN_RATE", 60),
-            event_store_path=Path(_env("EVENT_STORE_PATH", "./data/kalshi.db")),
+            # Absolute path resolved from package location so dashboard
+            # and bot can never disagree about which file holds the data.
+            # Override via EVENT_STORE_PATH for testing / live deployment.
+            event_store_path=_default_event_store_path(),
             replay_backlog_on_start=(_env("DASHBOARD_REPLAY_BACKLOG", "").lower() in ("1", "true", "yes")),
             libsql_url=_env("LIBSQL_URL"),
             libsql_auth_token=_env("LIBSQL_AUTH_TOKEN"),

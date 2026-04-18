@@ -211,6 +211,10 @@ def run(port: int | None = None, wait_for_url_sec: float = 30.0) -> int:
         # each relaunch which is fine for single-operator paper mode.
         secrets.token_urlsafe(48),
     )
+    # Pin the event-store path explicitly so uvicorn's CWD can't drift
+    # the dashboard onto a different SQLite file from the bot/verifier.
+    from .._paths import default_event_store_path
+    env["EVENT_STORE_PATH"] = str(default_event_store_path())
 
     print(f"[launcher] starting uvicorn on 127.0.0.1:{actual_port}")
     uvi = _spawn_uvicorn(actual_port, env, cwd=repo)

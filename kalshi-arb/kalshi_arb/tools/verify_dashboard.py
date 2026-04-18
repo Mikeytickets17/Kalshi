@@ -143,9 +143,13 @@ async def _verify(url: str, password: str, repo: Path) -> int:
 
         # Insert 5 events directly via the local EventStore. This is the
         # exact path the bot uses; we're impersonating it.
-        store_path = Path(os.environ.get(
-            "EVENT_STORE_PATH", str(repo / "data" / "kalshi.db")
-        ))
+        # MUST match the path the dashboard opened. Both go through the
+        # shared resolver so a CWD difference between processes can't
+        # silently point them at different files (which is exactly the
+        # bug that bit step 3 the first time).
+        from .._paths import default_event_store_path
+        store_path = default_event_store_path()
+        print(f"  using event store: {store_path}")
         try:
             store = EventStore(SqliteBackend(store_path))
             await store.start()
