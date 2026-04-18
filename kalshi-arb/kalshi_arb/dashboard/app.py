@@ -38,6 +38,18 @@ from itsdangerous import BadSignature, URLSafeSerializer
 
 from ..store import EventStore, SqliteBackend
 from .config import DashboardConfig
+from .csv_export import opportunities_csv, trades_csv
+from .queries import (
+    OpportunityFilters,
+    TradeFilters,
+    opportunities_query,
+    opportunity_detail,
+    overview_data,
+    pnl_data,
+    system_health_data,
+    trade_detail,
+    trades_query,
+)
 from .ratelimit import RateLimiter
 from .sse import Change, ChangeCapture, SSEBroker, _CLOSE_SENTINEL
 
@@ -330,27 +342,207 @@ def create_app(
             }
         )
 
-    # --- Tab routes. All require auth. Content is a stub in step 2-3. ---
+    # --- Tab routes. All require auth. SSR data is passed into templates. ---
 
-    def _tab(name: str, title: str):
-        async def _handler(
-            request: Request, _=Depends(_require_session)
-        ) -> HTMLResponse:
-            return templates.TemplateResponse(
-                request=request,
-                name=f"tabs/{name}.html",
-                context={
-                    "active_tab": name,
-                    "tab_title": title,
-                },
-            )
-        _handler.__name__ = f"tab_{name.replace('-', '_')}"
-        return _handler
+    def _opp_filters_from_query(request: Request) -> OpportunityFilters:
+        q = request.query_params
+        hours = _parse_int(q.get("hours"))
+        min_edge = _parse_float(q.get("min_edge"))
+        limit = _parse_int(q.get("limit")) or 500
+        offset = _parse_int(q.get("offset")) or 0
+        return OpportunityFilters(
+            hours=hours if hours and hours > 0 else None,
+            ticker=(q.get("ticker") or "").strip() or None,
+            decision=(q.get("decision") or "").strip() or None,
+            min_edge_cents=min_edge,
+            limit=limit,
+            offset=offset,
+            sort=q.get("sort", "ts_ms"),
+            sort_dir=q.get("sort_dir", "desc"),
+        )
 
-    for slug, title, _default in TABS:
-        app.get(f"/{slug}", response_class=HTMLResponse)(_tab(slug, title))
+    def _trade_filters_from_query(request: Request) -> TradeFilters:
+        q = request.query_params
+        hours = _parse_int(q.get("hours"))
+        limit = _parse_int(q.get("limit")) or 500
+        offset = _parse_int(q.get("offset")) or 0
+        return TradeFilters(
+            hours=hours if hours and hours > 0 else None,
+            ticker=(q.get("ticker") or "").strip() or None,
+            outcome=(q.get("outcome") or "").strip() or None,
+            limit=limit,
+            offset=offset,
+            sort=q.get("sort", "ts_ms"),
+            sort_dir=q.get("sort_dir", "desc"),
+        )
+
+    def _render_tab(request: Request, name: str, title: str, data: dict) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name=f"tabs/{name}.html",
+            context={
+                "active_tab": name,
+                "tab_title": title,
+                "data": data,
+                "data_json": json.dumps(data, default=str),
+            },
+        )
+
+    # ----- Overview -----
+    @app.get("/overview", response_class=HTMLResponse)
+    async def tab_overview(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        data = overview_data(request.app.state.store)
+        return _render_tab(request, "overview", "Overview", data)
+
+    @app.get("/overview/data")
+    async def overview_data_endpoint(
+        request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        return JSONResponse(overview_data(request.app.state.store))
+
+    # ----- Opportunities -----
+    @app.get("/opportunities", response_class=HTMLResponse)
+    async def tab_opportunities(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        filters = _opp_filters_from_query(request)
+        data = opportunities_query(request.app.state.store, filters)
+        data["filters"] = _filters_as_dict(filters)
+        return _render_tab(request, "opportunities", "Opportunities", data)
+
+    @app.get("/opportunities/data")
+    async def opportunities_data(
+        request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        filters = _opp_filters_from_query(request)
+        return JSONResponse(opportunities_query(request.app.state.store, filters))
+
+    @app.get("/opportunities/export.csv")
+    async def opportunities_export_csv(
+        request: Request, _=Depends(_require_session)
+    ) -> StreamingResponse:
+        filters = _opp_filters_from_query(request)
+        return opportunities_csv(request.app.state.store, filters)
+
+    @app.get("/opportunities/{opp_id}/detail")
+    async def opportunity_detail_endpoint(
+        opp_id: int, request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        data = opportunity_detail(request.app.state.store, opp_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="opportunity not found")
+        return JSONResponse(data)
+
+    # ----- Trades Taken -----
+    @app.get("/trades", response_class=HTMLResponse)
+    async def tab_trades(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        filters = _trade_filters_from_query(request)
+        data = trades_query(request.app.state.store, filters)
+        data["filters"] = _filters_as_dict(filters)
+        return _render_tab(request, "trades", "Trades Taken", data)
+
+    @app.get("/trades/data")
+    async def trades_data(
+        request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        filters = _trade_filters_from_query(request)
+        return JSONResponse(trades_query(request.app.state.store, filters))
+
+    @app.get("/trades/export.csv")
+    async def trades_export_csv(
+        request: Request, _=Depends(_require_session)
+    ) -> StreamingResponse:
+        filters = _trade_filters_from_query(request)
+        return trades_csv(request.app.state.store, filters)
+
+    @app.get("/trades/{opp_id}/detail")
+    async def trade_detail_endpoint(
+        opp_id: int, request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        data = trade_detail(request.app.state.store, opp_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="trade not found")
+        return JSONResponse(data)
+
+    # ----- P&L -----
+    @app.get("/pnl", response_class=HTMLResponse)
+    async def tab_pnl(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        hours = _parse_int(request.query_params.get("hours")) or 24 * 7
+        data = pnl_data(request.app.state.store, hours=hours)
+        return _render_tab(request, "pnl", "P&L", data)
+
+    @app.get("/pnl/data")
+    async def pnl_data_endpoint(
+        request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        hours = _parse_int(request.query_params.get("hours")) or 24 * 7
+        return JSONResponse(pnl_data(request.app.state.store, hours=hours))
+
+    # ----- System Health -----
+    @app.get("/system-health", response_class=HTMLResponse)
+    async def tab_system_health(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        data = system_health_data(request.app.state.store)
+        return _render_tab(request, "system-health", "System Health", data)
+
+    @app.get("/system-health/data")
+    async def system_health_data_endpoint(
+        request: Request, _=Depends(_require_session)
+    ) -> JSONResponse:
+        return JSONResponse(system_health_data(request.app.state.store))
+
+    # ----- News (placeholder tab only) -----
+    @app.get("/news", response_class=HTMLResponse)
+    async def tab_news(
+        request: Request, _=Depends(_require_session)
+    ) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="tabs/news.html",
+            context={"active_tab": "news", "tab_title": "News", "data": {}},
+        )
 
     return app
+
+
+def _parse_int(raw: str | None) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _parse_float(raw: str | None) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _filters_as_dict(f) -> dict:
+    """Serialize an OpportunityFilters / TradeFilters for the template."""
+    return {
+        "hours": getattr(f, "hours", None),
+        "ticker": getattr(f, "ticker", None),
+        "decision": getattr(f, "decision", None),
+        "outcome": getattr(f, "outcome", None),
+        "min_edge_cents": getattr(f, "min_edge_cents", None),
+        "limit": getattr(f, "limit", None),
+        "offset": getattr(f, "offset", None),
+        "sort": getattr(f, "sort", None),
+        "sort_dir": getattr(f, "sort_dir", None),
+    }
 
 
 def _client_ip(request: Request) -> str:

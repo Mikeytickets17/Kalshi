@@ -5,13 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}kalshi-arb{% endblock %}</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
   <script src="/static/dash.js" defer></script>
   <style>
-    /* Minimal custom styles on top of Tailwind CDN. */
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     .tab-link.active { color: #f8fafc; border-bottom-color: #22d3ee; }
+    /* Drawer slides in from the right. Pointer-events: none hides the
+       backdrop without animating it; actual visibility is toggled by
+       adding / removing .open in dash.js. */
+    #row-drawer {
+      transform: translateX(100%);
+      transition: transform 220ms ease;
+    }
+    #row-drawer.open { transform: translateX(0); }
+    #row-drawer-backdrop {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+    }
+    #row-drawer-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .row-clickable { cursor: pointer; }
+    .row-clickable:hover { background-color: rgb(15 23 42); }
   </style>
 </head>
 <body class="h-full text-slate-200">
@@ -23,7 +40,7 @@
           <span class="text-slate-500 text-xs">v{{ APP_VERSION }}</span>
         </div>
         <div class="flex items-center gap-4 text-xs text-slate-400">
-          <span>Step 2 skeleton</span>
+          <span id="bot-status-badge" class="rounded px-2 py-0.5 border border-slate-800 bg-slate-900">bot: —</span>
           <a href="/logout" class="text-slate-400 hover:text-slate-200">logout</a>
         </div>
       </div>
@@ -44,9 +61,35 @@
     <footer class="border-t border-slate-800 bg-slate-950 text-slate-500 text-xs">
       <div class="max-w-7xl mx-auto px-4 py-2 flex justify-between">
         <span>Read-only. Operator controls bot via CLI on laptop.</span>
-        <span id="sse-status">SSE: not wired (step 3)</span>
+        <span id="sse-status">SSE: connecting&hellip;</span>
       </div>
     </footer>
   </div>
+
+  <!-- Drawer container. Every row-click populates #row-drawer-body via
+       fetch(/{tab}/{id}/detail); ESC or backdrop click closes it. -->
+  <div id="row-drawer-backdrop"
+       class="fixed inset-0 bg-black/40 z-40"
+       data-drawer-backdrop></div>
+  <aside id="row-drawer"
+         class="fixed top-0 right-0 z-50 h-full w-full md:w-2/3 lg:w-1/2
+                bg-slate-950 border-l border-slate-800 shadow-2xl
+                overflow-y-auto"
+         aria-label="Row detail"
+         role="dialog">
+    <div class="sticky top-0 bg-slate-950/95 border-b border-slate-800 px-4 py-3
+                flex items-center justify-between">
+      <h2 id="row-drawer-title" class="text-lg font-semibold text-slate-100">Detail</h2>
+      <button type="button" data-drawer-close
+              class="text-slate-400 hover:text-slate-100 text-sm">close (ESC)</button>
+    </div>
+    <div id="row-drawer-body" class="px-4 py-4 text-sm text-slate-300">
+      <div class="text-slate-500">Loading&hellip;</div>
+    </div>
+  </aside>
+
+  {% if data_json is defined %}
+  <script type="application/json" id="tab-data">{{ data_json | safe }}</script>
+  {% endif %}
 </body>
 </html>

@@ -2,70 +2,196 @@
 {% block title %}System Health — kalshi-arb{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold text-slate-100">System Health</h1>
-<p class="text-slate-400 text-sm mt-1">Infrastructure heartbeat. Replica lag + SSE subscriber count are live; the rest populates in later steps.</p>
+<p class="text-slate-400 text-sm mt-1">Infrastructure heartbeat. Probe results, WS pool, event store stats, and degraded / kill-switch history.</p>
 
 <div id="replica-warning-banner"
      class="hidden mt-4 rounded border border-red-700 bg-red-900/40 px-3 py-2 text-sm text-red-200">
   Replica lag &gt; 5 s — dashboard may be showing stale data.
 </div>
 
-<section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+<section class="mt-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+  <div class="rounded border border-slate-800 bg-slate-950 p-3">
     <div class="text-xs text-slate-500">Replica lag</div>
-    <div id="hc-replica-lag" class="mt-1 text-2xl font-mono text-slate-400">—</div>
-    <div class="mt-1 text-xs text-slate-600">local SQLite = always 0; Turso replica in live mode.</div>
-  </div>
-  <div class="rounded border border-slate-800 bg-slate-950 p-4">
-    <div class="text-xs text-slate-500">SSE subscribers</div>
-    <div id="hc-sse-subs" class="mt-1 text-2xl font-mono text-slate-400">—</div>
-    <div class="mt-1 text-xs text-slate-600">open browser connections.</div>
-  </div>
-  <div class="rounded border border-slate-800 bg-slate-950 p-4">
-    <div class="text-xs text-slate-500">Events published</div>
-    <div id="hc-sse-published" class="mt-1 text-2xl font-mono text-slate-400">—</div>
-    <div class="mt-1 text-xs text-slate-600">total since dashboard started.</div>
-  </div>
-  {% for label, note in [
-    ("WS shards", "Connection state + message rate per shard."),
-    ("Latest probe", "detected_limits.yaml ts + environment."),
-    ("CRITICAL_UNWIND_FAILED", "Sentinel files in last 7 days."),
-  ] %}
-    <div class="rounded border border-slate-800 bg-slate-950 p-4">
-      <div class="text-xs text-slate-500">{{ label }}</div>
-      <div class="mt-1 text-2xl font-mono text-slate-400">—</div>
-      <div class="mt-1 text-xs text-slate-600">{{ note }}</div>
+    <div id="hc-replica-lag" class="mt-1 text-xl font-mono text-slate-200">
+      {% if data.replica_lag_ms is none %}—{% else %}{{ data.replica_lag_ms }} ms{% endif %}
     </div>
-  {% endfor %}
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-3">
+    <div class="text-xs text-slate-500">Event store queue</div>
+    <div class="mt-1 text-xl font-mono text-slate-200">{{ data.event_store.queue_depth }}</div>
+    <div class="text-xs text-slate-600">
+      written {{ data.event_store.written_total }} / dropped {{ data.event_store.dropped_total }}
+    </div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-3">
+    <div class="text-xs text-slate-500">Kill switch</div>
+    {% if data.kill_switch %}
+      <div class="mt-1 text-lg font-semibold
+           {% if data.kill_switch.tripped %}text-red-300{% else %}text-emerald-300{% endif %}">
+        {{ 'TRIPPED' if data.kill_switch.tripped else 'clear' }}
+      </div>
+      <div class="text-xs text-slate-600">{{ data.kill_switch.reason or '—' }}</div>
+    {% else %}
+      <div class="mt-1 text-lg font-semibold text-slate-300">never tripped</div>
+    {% endif %}
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-3">
+    <div class="text-xs text-slate-500">Unwind-failed files</div>
+    <div class="mt-1 text-xl font-mono {% if data.unwind_files %}text-red-300{% else %}text-slate-200{% endif %}">
+      {{ data.unwind_files | length }}
+    </div>
+    <div class="text-xs text-slate-600">CRITICAL_UNWIND_FAILED sentinels</div>
+  </div>
 </section>
 
-<script>
-// Poll /healthz every 3 s and fill the live tiles. The main SSE stream
-// is carrying change_log events; replica lag and broker stats are low-
-// churn scalars so periodic polling is simpler than a dedicated channel.
-(function () {
-  async function refresh() {
-    try {
-      const r = await fetch("/healthz", {credentials: "same-origin"});
-      const j = await r.json();
-      const lag = j.replica_lag_ms;
-      const banner = document.getElementById("replica-warning-banner");
-      const lagEl = document.getElementById("hc-replica-lag");
-      if (lag === null || lag === undefined) {
-        lagEl.textContent = "—";
-        banner.classList.add("hidden");
-      } else {
-        lagEl.textContent = `${lag} ms`;
-        if (lag > 5000) banner.classList.remove("hidden");
-        else banner.classList.add("hidden");
-      }
-      if (j.sse) {
-        document.getElementById("hc-sse-subs").textContent = j.sse.subscribers;
-        document.getElementById("hc-sse-published").textContent = j.sse.published_total;
-      }
-    } catch (e) { /* network hiccup; next tick retries */ }
-  }
-  refresh();
-  setInterval(refresh, 3000);
-})();
+<section class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
+  <div class="text-sm text-slate-400">Latest probe runs (per env / probe)</div>
+  {% if data.probes %}
+    <table class="mt-3 w-full text-sm">
+      <thead class="text-slate-500 text-xs uppercase">
+        <tr>
+          <th class="px-2 py-1 text-left">env</th>
+          <th class="px-2 py-1 text-left">probe</th>
+          <th class="px-2 py-1 text-left">status</th>
+          <th class="px-2 py-1 text-right">latency</th>
+          <th class="px-2 py-1 text-left">last run</th>
+          <th class="px-2 py-1 text-left">error</th>
+        </tr>
+      </thead>
+      <tbody id="hc-probes" class="divide-y divide-slate-800">
+        {% for p in data.probes %}
+          <tr>
+            <td class="px-2 py-1 text-slate-300">{{ p.env_tag }}</td>
+            <td class="px-2 py-1 font-mono text-cyan-300">{{ p.probe_name }}</td>
+            <td class="px-2 py-1">
+              {% if p.status == 'pass' %}
+                <span class="text-emerald-300">pass</span>
+              {% else %}
+                <span class="text-red-300">fail</span>
+              {% endif %}
+            </td>
+            <td class="px-2 py-1 text-right font-mono text-slate-400">
+              {% if p.latency_ms is not none %}{{ p.latency_ms }} ms{% else %}—{% endif %}
+            </td>
+            <td class="px-2 py-1 text-xs text-slate-500 font-mono">{{ p.ts_iso }}</td>
+            <td class="px-2 py-1 text-xs text-slate-500">{{ p.error or '' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+      No probe runs recorded. Run `python -m kalshi_arb.probe.probe` on the
+      operator's machine to populate.
+    </div>
+  {% endif %}
+</section>
+
+<section class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-sm text-slate-400">WS pool (last 10 min)</div>
+    {% if data.ws_pool %}
+      <table class="mt-3 w-full text-sm">
+        <thead class="text-slate-500 text-xs uppercase">
+          <tr>
+            <th class="px-2 py-1 text-left">ticker</th>
+            <th class="px-2 py-1 text-right">msgs</th>
+            <th class="px-2 py-1 text-right">gaps</th>
+            <th class="px-2 py-1 text-right">last seq</th>
+          </tr>
+        </thead>
+        <tbody id="hc-ws-pool" class="divide-y divide-slate-800">
+          {% for w in data.ws_pool %}
+            <tr>
+              <td class="px-2 py-1 font-mono text-cyan-300">{{ w.ticker }}</td>
+              <td class="px-2 py-1 text-right font-mono">{{ w.msgs }}</td>
+              <td class="px-2 py-1 text-right font-mono
+                   {% if w.gaps > 0 %}text-amber-300{% else %}text-slate-400{% endif %}">{{ w.gaps }}</td>
+              <td class="px-2 py-1 text-right font-mono text-slate-400">
+                {% if w.last_seq is not none %}{{ w.last_seq }}{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+        No WS metrics in the last 10 minutes.
+      </div>
+    {% endif %}
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-sm text-slate-400">Recent degraded events</div>
+    {% if data.degraded_events %}
+      <ul id="hc-degraded" class="mt-3 divide-y divide-slate-800 text-sm">
+        {% for d in data.degraded_events %}
+          <li class="py-2">
+            <div class="flex justify-between items-baseline">
+              <span class="text-amber-300 font-mono">{{ d.kind }}</span>
+              <span class="text-xs text-slate-500 font-mono">{{ d.ts_iso }}</span>
+            </div>
+            <div class="text-xs text-slate-400 mt-0.5">{{ d.detail or '' }}</div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+        No degraded events. The bot has run cleanly.
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
+  <div class="text-sm text-slate-400">Kill-switch history (last 7 d)</div>
+  {% if data.kill_switch_history %}
+    <table class="mt-3 w-full text-sm">
+      <thead class="text-slate-500 text-xs uppercase">
+        <tr>
+          <th class="px-2 py-1 text-left">when</th>
+          <th class="px-2 py-1 text-left">state</th>
+          <th class="px-2 py-1 text-left">reason</th>
+        </tr>
+      </thead>
+      <tbody id="hc-ks-history" class="divide-y divide-slate-800">
+        {% for k in data.kill_switch_history %}
+          <tr>
+            <td class="px-2 py-1 text-xs font-mono text-slate-500">{{ k.ts_iso }}</td>
+            <td class="px-2 py-1">
+              {% if k.tripped %}<span class="text-red-300">TRIPPED</span>
+              {% else %}<span class="text-emerald-300">clear</span>{% endif %}
+            </td>
+            <td class="px-2 py-1 text-slate-400">{{ k.reason or '' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+      No kill-switch events in the last 7 days.
+    </div>
+  {% endif %}
+</section>
+
+{% if data.unwind_files %}
+<section class="mt-6 rounded border border-red-800 bg-red-950/30 p-4">
+  <div class="text-sm text-red-300">CRITICAL_UNWIND_FAILED sentinel files</div>
+  <ul class="mt-2 text-xs font-mono text-red-200 divide-y divide-red-900">
+    {% for f in data.unwind_files %}
+      <li class="py-1">
+        {{ f.name }} — {{ f.size_bytes }} bytes — {{ f.mtime_iso }}
+        <span class="text-red-400 ml-2">[{{ f.path }}]</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<script type="application/json" id="sse-handlers">
+{
+  "probe_run": {"refresh": "/system-health/data"},
+  "degraded":  {"refresh": "/system-health/data"},
+  "kill_switch": {"refresh": "/system-health/data"}
+}
 </script>
 {% endblock %}
