@@ -1,5 +1,9 @@
 -- Event store schema. All timestamps are epoch milliseconds UTC.
 -- Prices are stored as integer cents (1..99). Sizes are integer contracts.
+--
+-- Compatible with both SQLite (local dev + bot on laptop) and libSQL
+-- (Turso primary + embedded replica on Fly). No dialect-specific SQL.
+-- SQLite-only PRAGMAs are no-ops under libSQL.
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -148,4 +152,30 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', '1');
+INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', '2');
+
+-- ---------------------------------------------------------------------
+-- Change capture (dashboard polling primitive).
+--
+-- Every domain-level write goes through an EventStore helper which
+-- stamps last_modified_ms = clock.now_ms() AND inserts a row here.
+-- The dashboard polls:
+--   SELECT entity_type, entity_id, ts_ms
+--     FROM change_log
+--    WHERE id > :last_seen_id
+--    ORDER BY id ASC;
+-- and fans each row out via SSE to connected browsers.
+--
+-- Works identically on SQLite and libSQL. On a Turso embedded replica,
+-- the rows appear here after the next sync() pull -- so the dashboard's
+-- replica lag is bounded by the sync_interval_sec config.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS change_log (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type      TEXT NOT NULL,      -- 'opportunity' | 'execution' | 'kill_switch' | ...
+    entity_id        INTEGER,            -- optional FK to the entity's own id
+    last_modified_ms INTEGER NOT NULL,   -- epoch ms UTC
+    payload          TEXT                -- optional JSON blob for small events
+);
+CREATE INDEX IF NOT EXISTS idx_change_log_ts ON change_log(last_modified_ms);
+CREATE INDEX IF NOT EXISTS idx_change_log_entity ON change_log(entity_type, last_modified_ms);
