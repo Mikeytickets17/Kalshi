@@ -69,6 +69,27 @@ module has also budgeted a machine.
    operator commits to watching dashboard daily. The
    `CRITICAL_UNWIND_FAILED_*.txt` sentinel + kill switch is the only
    automated response; everything else requires human attention.
+8. **Reconciliation-first live day protocol.** Day 1 of live trading is
+   a controlled reconciliation exercise, not normal operation.
+
+   - Reduce `HARD_CAP_USD` from whatever paper used (default $200) to
+     **$25/trade** for day 1 only. Every other guardrail stays
+     untouched.
+   - Within 24 hours of each trade firing, operator manually reconciles
+     it against Kalshi's settlement data: trade ID, fill prices, fees
+     actually charged, settlement amount. Compare to the bot's
+     `ExecutionResult.net_fill_cents` + `total_fees_cents` +
+     `pnl_confidence`. **Every trade. Not a sample.**
+   - The bug class this catches: paper P&L looked right but real
+     settlement math differs (fee edge cases on 1¢ prices, rounding on
+     partial fills, fee rebates we forgot about, Kalshi posting a
+     trade-through correction).
+   - Raise `HARD_CAP_USD` back to normal **only after** 100%
+     reconciliation on day 1 passes with zero discrepancies > 1¢. If
+     any trade is off by more than 1¢, halt, investigate, fix, then
+     rerun day 1 at $25/trade until clean.
+   - Log the reconciliation in `docs/reconciliation-log.md` (created
+     at live gate) so there's a written record.
 
 ## Migration steps (do these at the gate, not before)
 

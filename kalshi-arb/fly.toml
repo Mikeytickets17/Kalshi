@@ -1,0 +1,54 @@
+# Fly.io configuration for the kalshi-arb dashboard.
+#
+# =========================================================================
+# DO NOT CHANGE the fields marked [FREE-TIER-GUARD] without operator review.
+# They are the reason this deployment stays inside the free envelope. The
+# abstract is:
+#   * single region, single machine, shared-cpu-1x, 256 MB
+#   * min_machines_running = 1 (always on, no cold starts for SSE)
+#   * auto_stop / auto_start disabled -- DO NOT enable auto-scale
+#   * no [[vm]] replicas beyond the one declared below
+#   * no processes besides the `app` process
+# =========================================================================
+
+# App name -- created the first time you run `fly launch`. If you need to
+# change it later, do it in the Fly dashboard + here, redeploy.
+app = "kalshi-arb-dashboard"
+
+# Single region close to the Turso primary we'll create in step 3.
+primary_region = "iad"  # US East. Change only if Turso primary moves.
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Default values burned into the image. Overridable via `fly secrets`.
+  DASHBOARD_USERNAME = "admin"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # [FREE-TIER-GUARD] Keep exactly one machine running at all times.
+  # Auto-stop would break SSE (browsers would see cold-start gaps on
+  # reconnect). Auto-start is fine since we're always-on anyway.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Health check for Fly's load balancer. Must return 200 or Fly
+  # considers the machine unhealthy and redeploys.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+# [FREE-TIER-GUARD] 256 MB / shared-cpu-1x is the default free machine
+# size. Increasing either costs money.
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

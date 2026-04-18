@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-900">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}kalshi-arb{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <style>
+    /* Minimal custom styles on top of Tailwind CDN. */
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .tab-link.active { color: #f8fafc; border-bottom-color: #22d3ee; }
+  </style>
+</head>
+<body class="h-full text-slate-200">
+  <div class="min-h-full flex flex-col">
+    <header class="border-b border-slate-800 bg-slate-950">
+      <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="text-cyan-300 font-bold text-lg">kalshi-arb</span>
+          <span class="text-slate-500 text-xs">v{{ APP_VERSION }}</span>
+        </div>
+        <div class="flex items-center gap-4 text-xs text-slate-400">
+          <span>Step 2 skeleton</span>
+          <a href="/logout" class="text-slate-400 hover:text-slate-200">logout</a>
+        </div>
+      </div>
+      <nav class="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto">
+        {% for slug, title, _default in TABS %}
+          <a href="/{{ slug }}"
+             class="tab-link px-4 py-2 text-sm whitespace-nowrap border-b-2 border-transparent text-slate-400 hover:text-slate-200 {% if active_tab == slug %}active{% endif %}">
+            {{ title }}
+          </a>
+        {% endfor %}
+      </nav>
+    </header>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="border-t border-slate-800 bg-slate-950 text-slate-500 text-xs">
+      <div class="max-w-7xl mx-auto px-4 py-2 flex justify-between">
+        <span>Read-only. Operator controls bot via CLI on laptop.</span>
+        <span id="sse-status">SSE: not wired (step 3)</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
