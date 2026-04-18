@@ -159,18 +159,12 @@ def test_boundary_1_0c_passes() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_replay_24_hours(synthetic_event_stream) -> None:
-    """Drive the scanner with ~24h of synthesized delta events and verify
-    it produces a plausible number of emits, and zero emits on halted
-    markets."""
+def _replay(stream, scanner: StructuralArbScanner) -> dict[str, int]:
+    """Helper: drive the scanner through an event stream and count decisions
+    by label. Used by both the positive and negative-control replay tests."""
     books: dict[str, OrderBook] = {}
-    emit_count = 0
-    halt_count = 0
-    skip_empty_count = 0
-
-    scanner = _scanner()
-
-    for event in synthetic_event_stream:
+    counts: dict[str, int] = {}
+    for event in stream:
         ticker = event["ticker"]
         book = books.setdefault(ticker, OrderBook(ticker=ticker))
         if event["kind"] == "delta":
@@ -183,22 +177,46 @@ def test_replay_24_hours(synthetic_event_stream) -> None:
             )
         elif event["kind"] == "pause":
             book.mark_paused(now=event["ts_sec"])
-
         d = scanner.scan(book, now_ms=int(event["ts_sec"] * 1000))
-        if d.decision == DECISION_EMIT:
-            emit_count += 1
-        elif d.decision == DECISION_SKIP_HALTED:
-            halt_count += 1
-        elif d.decision == DECISION_SKIP_EMPTY:
-            skip_empty_count += 1
+        counts[d.decision] = counts.get(d.decision, 0) + 1
+    return counts
 
-    # Sanity: at least one arb opportunity was planted by the synth feed.
-    assert emit_count > 0, "synth feed should have injected at least one arb window"
-    # And at least one halted-market rejection.
-    assert halt_count > 0, "synth feed should have injected at least one pause"
-    # And no emits on halted markets (stronger check: invariant, not frequency).
-    # Verified implicitly: when a book is halted the scanner returns SKIP_HALTED,
-    # so halt_count > 0 AND emit_count recorded only on non-halted markets.
+
+def test_replay_24_hours(synthetic_event_stream) -> None:
+    """Positive replay: drive the scanner with ~24h of synthesized delta
+    events and verify it produces a plausible number of emits, and at
+    least one halted rejection."""
+    counts = _replay(synthetic_event_stream, _scanner())
+    assert counts.get(DECISION_EMIT, 0) > 0, (
+        "synth feed should have injected at least one arb window"
+    )
+    assert counts.get(DECISION_SKIP_HALTED, 0) > 0, (
+        "synth feed should have injected at least one pause"
+    )
+
+
+def test_replay_24_hours_negative_control_impossible_edge(synthetic_event_stream) -> None:
+    """Negative control: same 24h replay but with an impossibly high
+    min_net_edge_cents (100c = $1.00 net edge per contract, unreachable
+    by construction since 100 - sum - fees - slippage <= 100).
+
+    If this test ever emits a non-zero count, config params are being
+    silently ignored by the scanner. That would be a critical correctness
+    bug -- protects against the class of 'knob does nothing' regressions."""
+    counts = _replay(synthetic_event_stream, _scanner(min_edge=100.0))
+    assert counts.get(DECISION_EMIT, 0) == 0, (
+        f"Impossible edge floor should yield ZERO emits, got "
+        f"{counts.get(DECISION_EMIT, 0)}. Scanner is ignoring "
+        f"config.min_edge_cents."
+    )
+    # And the stream should still produce plenty of SKIP_BELOW_EDGE rows,
+    # proving the scanner DID look at every book and DID compute edge --
+    # it just never found one that cleared the impossible floor.
+    assert counts.get(DECISION_SKIP_BELOW_EDGE, 0) > 0, (
+        "Expected SKIP_BELOW_EDGE decisions proving the scanner evaluated "
+        "books against the threshold. Got zero -- the scanner may be "
+        "short-circuiting before the edge check."
+    )
 
 
 # ----------------------------------------------------------------------

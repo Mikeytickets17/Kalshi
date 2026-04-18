@@ -13,10 +13,14 @@ effective_from row).
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from kalshi_arb.scanner.fees import BUILTIN_DEFAULT_TIER, FeeModel
+
+TEST_FEES_YAML = Path(__file__).parent / "fees_test.yaml"
 
 
 # Hand-calculated per-contract taker fee at 5 canonical price points.
@@ -74,3 +78,69 @@ def test_formula_matches_hand_calculation_across_full_range() -> None:
         expected = math.ceil(0.07 * p * (100 - p) / 100)
         actual = BUILTIN_DEFAULT_TIER.fee_per_contract_cents(p)
         assert actual == expected, f"mismatch at p={p}: got {actual}, want {expected}"
+
+
+# ----------------------------------------------------------------------
+# Date-keyed regime tests.
+# Protects against the bug where fees.yaml gets edited and all date ranges
+# silently collapse to the same coefficient.
+# ----------------------------------------------------------------------
+
+
+REGIME_POINTS = [
+    # (when, price_cents, expected_cents_per_contract)
+    # Pre-2026-04-30: standard 7% regime -> 45c price => 2c fee
+    (datetime(2025, 6, 1, tzinfo=timezone.utc), 45, 2),
+    (datetime(2026, 1, 15, tzinfo=timezone.utc), 45, 2),
+    # Post-2026-04-30: promotional 3.5% regime -> 45c price halves the fee:
+    # ceil(0.035 * 45 * 55 / 100) = ceil(0.86625) = 1c
+    (datetime(2026, 5, 1, tzinfo=timezone.utc), 45, 1),
+    (datetime(2026, 7, 1, tzinfo=timezone.utc), 45, 1),
+]
+
+
+@pytest.mark.parametrize("when,price_cents,expected_fee", REGIME_POINTS)
+def test_fee_schedule_switches_between_regimes(
+    when: datetime, price_cents: int, expected_fee: int
+) -> None:
+    model = FeeModel.load(TEST_FEES_YAML)
+    tier = model.active_tier(when=when)
+    assert tier.fee_per_contract_cents(price_cents) == expected_fee, (
+        f"At {when.date()}, expected {expected_fee}c on {price_cents}c price, "
+        f"got {tier.fee_per_contract_cents(price_cents)}c -- regime lookup is broken"
+    )
+
+
+def test_two_regimes_actually_differ() -> None:
+    """Strong guard: the two tiers in fees_test.yaml MUST produce distinct
+    outputs across the whole price range. If someone edits the YAML and
+    accidentally sets both coefficients to the same value, this test fails."""
+    model = FeeModel.load(TEST_FEES_YAML)
+    pre = model.active_tier(when=datetime(2026, 1, 15, tzinfo=timezone.utc))
+    post = model.active_tier(when=datetime(2026, 7, 1, tzinfo=timezone.utc))
+
+    differences = 0
+    for p in range(1, 100):
+        if pre.fee_per_contract_cents(p) != post.fee_per_contract_cents(p):
+            differences += 1
+    assert differences > 0, (
+        "Fee regimes in fees_test.yaml produce identical fees across all "
+        "prices. The YAML probably has both tiers flattened to the same "
+        "coefficient -- check taker_coeff values differ between rows."
+    )
+
+
+def test_structural_arb_fee_uses_active_regime() -> None:
+    """The public API used by the scanner (structural_arb_fee_cents) must
+    honor the date-keyed regime, not just the builtin default."""
+    model = FeeModel.load(TEST_FEES_YAML)
+    pre = model.structural_arb_fee_cents(
+        45, 45, when=datetime(2026, 1, 15, tzinfo=timezone.utc)
+    )
+    post = model.structural_arb_fee_cents(
+        45, 45, when=datetime(2026, 7, 1, tzinfo=timezone.utc)
+    )
+    # Pre: 2c + 2c = 4c. Post: 1c + 1c = 2c.
+    assert pre == 4
+    assert post == 2
+    assert pre != post  # redundant but documents intent
