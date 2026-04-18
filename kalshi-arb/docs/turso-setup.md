@@ -1,11 +1,30 @@
 # Turso setup
 
-Written for the Module 4 dashboard deployment. Bot writes go to the
-Turso primary; the Fly-hosted dashboard reads from an embedded replica
-of the same database. Bot and dashboard use SEPARATE auth tokens so
-either can be revoked without affecting the other.
+Written for the live-migration architecture (not paper phase). Bot
+writes go to the Turso primary; the always-on dashboard reads from an
+embedded replica of the same database. Bot and dashboard use SEPARATE
+auth tokens so either can be revoked without affecting the other.
 
-## One-time setup
+Turso is NOT used in the paper phase -- the local SQLite event store
+handles that fine and the bot + dashboard both run on the operator's
+laptop. See `docs/live-migration.md` for when Turso becomes active.
+
+## Python package install
+
+libsql-experimental is an **optional** dependency so the paper-phase
+operator doesn't need a Rust toolchain to install the repo. Install the
+Turso extra explicitly when you're ready to wire up a live DB:
+
+```bash
+pip install -e ".[turso]"
+```
+
+Heads-up: on Python 3.14 Windows (and any other combo where no pre-built
+wheel exists), this will pull down Rust to build the driver from source.
+That's fine for a one-time install on the dashboard host; don't surprise
+the paper-phase operator with it.
+
+## One-time setup (Turso side)
 
 1. Install the Turso CLI: <https://docs.turso.tech/cli/installation>.
 2. Sign in: `turso auth login`.

@@ -18,6 +18,7 @@ this file proves the abstraction adds nothing that breaks on libsql.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -25,8 +26,16 @@ import pytest
 from kalshi_arb.store import EventStore, LibsqlBackend, SqliteBackend, StoreBackend
 
 
+# libsql-experimental is an OPTIONAL dependency (pip install -e ".[turso]").
+# When absent, the parametrized libsql tests self-skip so a paper-phase
+# operator can run the full suite without a Rust toolchain / Turso install.
+HAS_LIBSQL = importlib.util.find_spec("libsql_experimental") is not None
+
+
 # ----------------------------------------------------------------------
-# Fixture: parametrize every test across both backends.
+# Fixture: parametrize every test across both backends. libsql variant
+# is marked `skipif` at collection time so it shows up in the test
+# summary as "s" (skipped) rather than silently disappearing.
 # ----------------------------------------------------------------------
 
 
@@ -40,19 +49,25 @@ def _make_libsql(tmp_path: Path) -> StoreBackend:
     return LibsqlBackend(url=str(tmp_path / "abstraction-libsql.db"))
 
 
-@pytest.fixture(params=["sqlite", "libsql"], ids=["sqlite", "libsql"])
+@pytest.fixture(
+    params=[
+        "sqlite",
+        pytest.param(
+            "libsql",
+            marks=pytest.mark.skipif(
+                not HAS_LIBSQL,
+                reason="libsql-experimental not installed (pip install -e '.[turso]')",
+            ),
+        ),
+    ],
+    ids=["sqlite", "libsql"],
+)
 async def store(request, tmp_path: Path):
     """Async fixture: ONE event loop for setup + test body + teardown.
     Avoids the 'asyncio.Queue bound to dead loop' footgun that trips up
     multi-asyncio.run fixtures."""
     make = _make_sqlite if request.param == "sqlite" else _make_libsql
-    try:
-        backend = make(tmp_path)
-    except RuntimeError as exc:
-        if "libsql-experimental is not installed" in str(exc):
-            pytest.skip("libsql-experimental not available in this env")
-        raise
-
+    backend = make(tmp_path)
     store = EventStore(backend)
     await store.start()
     try:
