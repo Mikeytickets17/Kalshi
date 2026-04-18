@@ -1,16 +1,16 @@
 @echo off
 REM ------------------------------------------------------------------
 REM  Verifies the running dashboard end-to-end and shows a Windows
-REM  popup with PASS or FAIL. ZERO interpretation needed.
+REM  popup with a one-line PASS/FAIL headline + actionable detail.
+REM  ZERO interpretation needed -- the popup tells you what to do.
 REM
 REM  Usage:
-REM    1. Make sure start_dashboard.bat is running in another window.
+REM    1. Make sure start_dashboard.bat is running in another window
+REM       (it should show a "DASHBOARD URL" banner).
 REM    2. Double-click this file.
 REM    3. Wait ~20 seconds.
-REM    4. A popup tells you if step 3 works.
-REM
-REM  If FAIL: copy the dialog text and paste it to Claude. Don't
-REM  guess what went wrong.
+REM    4. Read the popup headline -- if it says FAIL, the popup also
+REM       tells you the next step. Do that.
 REM ------------------------------------------------------------------
 
 setlocal
@@ -19,17 +19,24 @@ cd /d "%~dp0"
 python -m kalshi_arb.tools.verify_dashboard > verify_output.txt 2>&1
 set EXITCODE=%ERRORLEVEL%
 
-REM Show a Windows MessageBox with the result. No terminal reading required.
+REM Show a Windows MessageBox with the headline + full output.
+REM HEADLINE: <message> in the script output becomes the dialog title;
+REM the body shows the full transcript so any failure detail is visible
+REM without opening a terminal.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$txt = Get-Content -Raw verify_output.txt;" ^
+  "$headline = (Select-String -Path verify_output.txt -Pattern '^HEADLINE: (.*)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Last 1);" ^
+  "if (-not $headline) { $headline = 'verifier produced no HEADLINE line' }" ^
   "if (%EXITCODE% -eq 0) {" ^
-  "  $title = 'kalshi-arb: STEP 3 PASS';" ^
+  "  $title = 'kalshi-arb: PASS';" ^
   "  $icon  = 'Information';" ^
-  "  $msg   = 'All checks passed. The dashboard is live, login works, all six tabs load, and synthetic events flowed end-to-end through the tunnel within 10 seconds.';" ^
+  "  $url = '';" ^
+  "  if (Test-Path dashboard_url.txt) { $url = (Get-Content -Raw dashboard_url.txt).Trim() }" ^
+  "  $msg = 'ALL GREEN.' + [Environment]::NewLine + [Environment]::NewLine + $headline + [Environment]::NewLine + [Environment]::NewLine + 'Dashboard URL: ' + $url + [Environment]::NewLine + [Environment]::NewLine + 'Login: admin / (password in .dashboard_creds)';" ^
   "} else {" ^
-  "  $title = 'kalshi-arb: STEP 3 FAIL';" ^
+  "  $title = 'kalshi-arb: FAIL';" ^
   "  $icon  = 'Error';" ^
-  "  $msg   = 'A check failed. Copy the text below and paste it to Claude:' + [Environment]::NewLine + [Environment]::NewLine + $txt;" ^
+  "  $msg = $headline + [Environment]::NewLine + [Environment]::NewLine + '--- full transcript below ---' + [Environment]::NewLine + $txt;" ^
   "}" ^
   "Add-Type -AssemblyName System.Windows.Forms;" ^
   "[System.Windows.Forms.MessageBox]::Show($msg, $title, 'OK', $icon)"

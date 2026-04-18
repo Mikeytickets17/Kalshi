@@ -147,12 +147,18 @@ async def _verify(url: str, password: str, repo: Path) -> int:
             failures.append("login")
             return 2
 
+        # The session cookie is set with Secure=True so httpx's cookie
+        # jar will refuse to resend it over plain HTTP. Pass it
+        # explicitly per request so the verifier works against any
+        # transport (HTTPS via Cloudflare in production, HTTP in tests).
+        auth_cookies = {"kalshi_dash_session": cookie}
+
         # ---- 3) All six tabs reachable when authenticated ----
         tab_results = []
         for slug in ("overview", "opportunities", "trades", "pnl",
                      "system-health", "news"):
             try:
-                r = await client.get(f"/{slug}")
+                r = await client.get(f"/{slug}", cookies=auth_cookies)
                 tab_results.append((slug, r.status_code))
             except Exception as exc:  # noqa: BLE001
                 tab_results.append((slug, f"exception: {exc}"))
@@ -165,7 +171,9 @@ async def _verify(url: str, password: str, repo: Path) -> int:
         # ---- 4) End-to-end SSE pipeline: insert events, watch them appear ----
         # Pre-read the current high-water mark so we only count NEW events.
         try:
-            r = await client.get("/events/poll?since_id=0&limit=1")
+            r = await client.get(
+                "/events/poll?since_id=0&limit=1", cookies=auth_cookies
+            )
             data = r.json()
             current_max_id = max(
                 (ch["id"] for ch in data.get("changes", [])), default=0
@@ -215,7 +223,8 @@ async def _verify(url: str, password: str, repo: Path) -> int:
         while time.monotonic() < deadline:
             try:
                 r = await client.get(
-                    f"/events/poll?since_id={current_max_id}&limit=200"
+                    f"/events/poll?since_id={current_max_id}&limit=200",
+                    cookies=auth_cookies,
                 )
                 changes = r.json().get("changes", [])
                 new_ids = [ch["id"] for ch in changes]
@@ -269,14 +278,53 @@ async def _verify(url: str, password: str, repo: Path) -> int:
     print()
     print("=" * 70)
     if failures:
+        # The popup picks up this HEADLINE line and uses it as the
+        # dialog title; the rest of the output appears in the body.
+        # Map the first failure to a single-sentence operator action
+        # so they don't have to interpret a stack trace.
+        first = failures[0]
+        action = {
+            "/healthz": (
+                "Dashboard isn't reachable. Make sure start_dashboard.bat "
+                "is running and showed a tunnel URL banner."
+            ),
+            "login": (
+                "Login failed. The .dashboard_creds password didn't match. "
+                "If you regenerated it, restart the launcher."
+            ),
+            "tabs": (
+                "One or more tabs returned a non-200 status. Restart the "
+                "launcher; if it persists, share verify_output.txt."
+            ),
+            "path-mismatch": (
+                "Dashboard is running OLD code (different SQLite path "
+                "than the verifier). Close the launcher window and "
+                "double-click start_dashboard.bat again."
+            ),
+            "pre-read": (
+                "Could not read /events/poll. Likely a session-cookie "
+                "issue. Restart the launcher and re-run this script."
+            ),
+            "insert": (
+                "Verifier failed to write to the SQLite event store. "
+                "Check disk space and that data/kalshi.db isn't locked."
+            ),
+            "e2e": (
+                "Writes succeeded but never reached the dashboard. "
+                "Almost always: the running dashboard is OLD code -- "
+                "close the launcher window and re-open start_dashboard.bat."
+            ),
+        }.get(first, f"Check '{first}' failed -- see details below.")
         print(f"  RESULT: FAIL ({len(failures)} of 4+ checks failed: "
               f"{', '.join(failures)})")
-        print("  Re-run after fixing or paste this output to Claude.")
+        print(f"  ACTION: {action}")
         print("=" * 70)
+        print(f"HEADLINE: FAIL -- {action}")
         return 10
     print("  RESULT: PASS  -- all four gate checks succeeded.")
     print("  Step 3 verified end-to-end: tunnel + auth + tabs + live SSE.")
     print("=" * 70)
+    print("HEADLINE: PASS -- dashboard is live and updates flow end-to-end.")
     return 0
 
 
