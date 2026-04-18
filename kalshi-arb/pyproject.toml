@@ -69,4 +69,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --strict-markers"
+addopts = "-v --strict-markers -m 'not live'"
+markers = [
+    "live: touches the public network (cloudflared quick-tunnel end-to-end). Opt-in.",
+]

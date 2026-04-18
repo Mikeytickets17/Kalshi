@@ -2,9 +2,34 @@
 
 Structural arbitrage engine for Kalshi prediction markets.
 
-Push #1 scope: market-data ingestion, event store, one-shot probe script. No
-scanner / sizer / executor / dashboard / backtest yet — those land in
-subsequent pushes.
+## Quick start -- dashboard
+
+**Double-click `start_dashboard.bat`** (Windows) or run `./start_dashboard.sh`
+(macOS / Linux). Wait ~10 seconds. The terminal will print a banner like:
+
+```
+======================================================================
+  DASHBOARD URL:  https://<random-words>.trycloudflare.com
+  LOGIN:          admin / <see .dashboard_creds>
+  URL FILE:       /path/to/dashboard_url.txt
+======================================================================
+```
+
+Open that URL in any browser (phone, laptop, anywhere). Log in with
+username `admin` and the password in `.dashboard_creds` (generated on
+first run, gitignored). Close the terminal or press `Ctrl+C` to stop
+both the dashboard and the tunnel.
+
+**What this uses:**
+* Local FastAPI dashboard on `127.0.0.1:8000`.
+* [cloudflared](https://github.com/cloudflare/cloudflared) in quick-tunnel
+  mode -- no Cloudflare account needed. The binary is auto-downloaded
+  to `bin/` on first run (~25 MB, one time).
+
+**v1 constraint:** the bot and dashboard run on your laptop. When the
+laptop is off, both stop. Acceptable for the 48 h paper phase. See
+`docs/live-migration.md` for the plan to move to an always-on host
+before live trading.
 
 ## What's in this directory
 
