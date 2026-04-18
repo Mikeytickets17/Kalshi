@@ -332,6 +332,155 @@ class EventStore:
             )
         )
 
+    def record_order_placed(
+        self,
+        *,
+        client_order_id: str,
+        kalshi_order_id: str | None,
+        opportunity_id: int,
+        ticker: str,
+        side: str,
+        action: str,
+        type_: str,
+        limit_price: int,
+        count: int,
+        placed_ok: bool,
+        error: str | None,
+    ) -> None:
+        """Both legs of an arb are recorded here; matched via opportunity_id."""
+        import json
+        self.submit(
+            WriteJob(
+                """INSERT INTO orders_placed(
+                    client_order_id, kalshi_order_id, opportunity_id,
+                    ticker, side, action, type, limit_price, count,
+                    placed_ts_ms, placed_ok, error)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    client_order_id, kalshi_order_id, opportunity_id,
+                    ticker, side, action, type_, limit_price, count,
+                    clock.now_ms(), 1 if placed_ok else 0, error,
+                ),
+                change_entity_type="order_placed",
+                change_entity_id=opportunity_id,
+                change_payload=json.dumps({
+                    "client_order_id": client_order_id,
+                    "ticker": ticker,
+                    "side": side,
+                    "count": count,
+                    "limit_price": limit_price,
+                    "placed_ok": placed_ok,
+                }),
+            )
+        )
+
+    def record_order_filled(
+        self,
+        *,
+        client_order_id: str,
+        filled_price: int,
+        filled_count: int,
+        fees_cents: int = 0,
+    ) -> None:
+        import json
+        self.submit(
+            WriteJob(
+                """INSERT INTO orders_filled(
+                    client_order_id, filled_ts_ms, filled_price, filled_count, fees_cents)
+                   VALUES(?,?,?,?,?)""",
+                (
+                    client_order_id, clock.now_ms(), filled_price,
+                    filled_count, fees_cents,
+                ),
+                change_entity_type="order_filled",
+                change_payload=json.dumps({
+                    "client_order_id": client_order_id,
+                    "filled_price": filled_price,
+                    "filled_count": filled_count,
+                    "fees_cents": fees_cents,
+                }),
+            )
+        )
+
+    def record_pnl_realized(
+        self,
+        *,
+        opportunity_id: int,
+        yes_pnl_cents: int,
+        no_pnl_cents: int,
+        fees_cents: int,
+        net_cents: int,
+        note: str | None = None,
+    ) -> None:
+        import json
+        self.submit(
+            WriteJob(
+                """INSERT INTO pnl_realized(
+                    opportunity_id, settled_ts_ms, yes_pnl_cents, no_pnl_cents,
+                    fees_cents, net_cents, note)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (
+                    opportunity_id, clock.now_ms(), yes_pnl_cents, no_pnl_cents,
+                    fees_cents, net_cents, note,
+                ),
+                change_entity_type="pnl_realized",
+                change_entity_id=opportunity_id,
+                change_payload=json.dumps({
+                    "opportunity_id": opportunity_id,
+                    "net_cents": net_cents,
+                }),
+            )
+        )
+
+    def record_degraded_event(self, kind: str, detail: str) -> None:
+        """Degraded-mode notifications: WS reconnect storms, sequential
+        portfolio reads, slow probe results -- anything that's not an
+        outage but warrants operator attention. Streams to the dashboard
+        via change_log only (no separate table; we never need to query
+        them out-of-band)."""
+        import json
+        self.submit(
+            WriteJob(
+                "INSERT INTO change_log(entity_type, entity_id, last_modified_ms, payload)"
+                " VALUES(?,?,?,?)",
+                (
+                    "degraded",
+                    None,
+                    clock.now_ms(),
+                    json.dumps({"kind": kind, "detail": detail}),
+                ),
+            )
+        )
+
+    def record_probe_run(
+        self,
+        *,
+        env_tag: str,
+        probe_name: str,
+        status: str,
+        latency_ms: int | None,
+        error: str | None = None,
+    ) -> None:
+        """Probe results land here from the separate probe process so the
+        System Health tab can show last-run status per probe per env."""
+        import json
+        self.submit(
+            WriteJob(
+                """INSERT INTO probe_runs(ts_ms, env_tag, probe_name, status, latency_ms, error)
+                   VALUES(?,?,?,?,?,?)""",
+                (
+                    clock.now_ms(), env_tag, probe_name, status,
+                    latency_ms, error,
+                ),
+                change_entity_type="probe_run",
+                change_payload=json.dumps({
+                    "env_tag": env_tag,
+                    "probe_name": probe_name,
+                    "status": status,
+                }),
+            )
+        )
+
     def stats(self) -> dict[str, int]:
         return {
             "queue_depth": self._queue.qsize() if self._queue is not None else 0,

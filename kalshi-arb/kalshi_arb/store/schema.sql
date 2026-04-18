@@ -147,12 +147,27 @@ CREATE TABLE IF NOT EXISTS ws_metrics (
 CREATE INDEX IF NOT EXISTS idx_ws_bucket ON ws_metrics(bucket_ts_ms);
 CREATE INDEX IF NOT EXISTS idx_ws_ticker ON ws_metrics(ticker);
 
+-- Probe runs. Written by the kalshi probe (separate process) and read
+-- by the System Health tab so the operator can see at-a-glance whether
+-- the bot's API connectivity, auth, and order-flow are healthy.
+CREATE TABLE IF NOT EXISTS probe_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ms         INTEGER NOT NULL,
+    env_tag       TEXT NOT NULL,         -- 'demo' | 'prod'
+    probe_name    TEXT NOT NULL,         -- 'auth' | 'rest' | 'ws' | 'order_lifecycle'
+    status        TEXT NOT NULL CHECK (status IN ('pass', 'fail')),
+    latency_ms    INTEGER,
+    error         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_probe_ts ON probe_runs(ts_ms);
+CREATE INDEX IF NOT EXISTS idx_probe_name ON probe_runs(probe_name, ts_ms);
+
 -- Schema version marker. Bump when migrating.
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', '2');
+INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', '3');
 
 -- ---------------------------------------------------------------------
 -- Change capture (dashboard polling primitive).
