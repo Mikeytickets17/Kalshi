@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 
 import typer
 
@@ -19,6 +21,75 @@ def probe() -> None:
 
     log.setup()
     asyncio.run(probe_run())
+
+
+@app.command()
+def paper(
+    smoke_test: int = typer.Option(
+        0,
+        "--smoke-test",
+        help=(
+            "Run for N seconds against a fake WS source then exit. "
+            "0 = production paper mode (real Kalshi WS)."
+        ),
+    ),
+    smoke_rate: float = typer.Option(
+        5.0,
+        "--smoke-rate",
+        help="Deltas per second in smoke-test mode.",
+    ),
+    smoke_seed: int = typer.Option(
+        42,
+        "--smoke-seed",
+        help="RNG seed for the fake WS generator in smoke-test mode.",
+    ),
+    probe_path: Path = typer.Option(
+        Path("config/detected_limits.yaml"),
+        "--probe-path",
+        help="Path to the prod probe output. Must be fresh (<24h) and environment=prod.",
+    ),
+) -> None:
+    """Paper-mode pipeline: Kalshi WS -> scanner -> sizer -> PaperKalshiAPI -> event store.
+
+    The paper command is paper-mode ONLY. It refuses to start if
+    LIVE_TRADING=true is set in the environment. Live trading gets a
+    separate CLI command (not yet built).
+    """
+    from .common.gates import GateError
+    from .executor.paper import PaperConfig
+    from .paper.runner import PaperRunner, PaperRunnerConfig
+
+    log.setup()
+
+    try:
+        cfg = Config.load()
+    except RuntimeError as exc:
+        typer.secho(f"ERROR: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    paper_cfg = PaperConfig.load()
+    runner_cfg = PaperRunnerConfig.from_config(
+        cfg,
+        paper_cfg,
+        probe_path=probe_path,
+        smoke_test_seconds=smoke_test,
+        smoke_test_rate_per_sec=smoke_rate,
+        smoke_test_seed=smoke_seed,
+    )
+    runner = PaperRunner(runner_cfg)
+
+    try:
+        asyncio.run(runner.run())
+    except GateError as exc:
+        typer.secho(f"GATE REFUSED: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=3) from None
+    except RuntimeError as exc:
+        typer.secho(f"ERROR: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=4) from None
+    except KeyboardInterrupt:
+        # Signal handler already tripped stop(); _shutdown ran in the
+        # finally block of run(). Exit 0 for clean operator Ctrl+C.
+        sys.exit(0)
 
 
 @app.command()
