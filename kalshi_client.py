@@ -16,6 +16,16 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Try to import pykalshi's MarketStatus enum for API-side status filtering.
+# If the import fails (older pykalshi), fall back to no status kwarg.
+try:
+    from pykalshi._sync.markets import MarketStatus  # type: ignore
+except Exception:
+    try:
+        from pykalshi.models import MarketStatus  # type: ignore
+    except Exception:
+        MarketStatus = None  # type: ignore
+
 
 @dataclass
 class KalshiMarket:
@@ -47,6 +57,13 @@ class KalshiOrder:
 class KalshiClient:
     """Client for Kalshi's REST API via pykalshi."""
 
+    # Cache the crypto-market snapshot. Multiple subsystems (market_scanner,
+    # edge_scanner, whale_tracker, contract_matcher, spread_reader) each call
+    # get_crypto_markets every few seconds. Without a cache we paginate 6
+    # series × multiple pages × ~6 callers = hundreds of requests/minute,
+    # which Kalshi answers with HTTP 429.
+    _CRYPTO_CACHE_TTL = 30.0  # seconds
+
     def __init__(self) -> None:
         self._use_demo = config.KALSHI_USE_DEMO
         self._api_key_id = config.KALSHI_API_KEY_ID
@@ -54,6 +71,8 @@ class KalshiClient:
         self._paper_mode = config.PAPER_MODE
         self._client: Any = None
         self._base_url = config.KALSHI_BASE_URL_DEMO if self._use_demo else config.KALSHI_BASE_URL_PROD
+        self._crypto_cache: list[KalshiMarket] = []
+        self._crypto_cache_time: float = 0.0
 
         self._init_client()
         logger.info(
@@ -66,15 +85,13 @@ class KalshiClient:
             logger.warning("Kalshi API credentials not configured — paper mode only")
             return
         try:
-            from pykalshi import HttpClient
-            with open(self._private_key_path, "r") as f:
-                private_key = f.read()
-            self._client = HttpClient(
-                key_id=self._api_key_id,
-                private_key=private_key,
-                base_url=self._base_url,
+            from pykalshi import KalshiClient as PyKalshiClient
+            self._client = PyKalshiClient(
+                api_key_id=self._api_key_id,
+                private_key_path=self._private_key_path,
+                demo=self._use_demo,
             )
-            logger.info("Kalshi API authenticated")
+            logger.info("Kalshi API authenticated (demo=%s)", self._use_demo)
         except ImportError:
             logger.warning("pykalshi not installed, paper mode only")
         except Exception as exc:
@@ -84,26 +101,182 @@ class KalshiClient:
     def is_connected(self) -> bool:
         return self._client is not None
 
+    # Crypto series on Kalshi production (verified via discover_kalshi.py).
+    CRYPTO_SERIES = (
+        "KXBTC15M",   # Bitcoin 15-minute up/down
+        "KXBTC",      # Bitcoin hourly range
+        "KXBTCD",     # Bitcoin daily above/below
+        "KXETH15M",   # Ethereum 15-minute up/down
+        "KXETH",      # Ethereum hourly range
+        "KXETHD",     # Ethereum daily above/below
+    )
+
     def get_crypto_markets(self) -> list[KalshiMarket]:
-        """Fetch open crypto price contracts from Kalshi."""
+        """Fetch open crypto price contracts from Kalshi.
+
+        Results are cached for CRYPTO_CACHE_TTL seconds so that the five
+        subsystems hitting this method don't rate-limit the exchange.
+        """
         if not self._client:
             return []
-        try:
-            resp = self._client.get_markets(status="open", limit=200)
-            markets = []
-            for m in resp.get("markets", []):
-                ticker = m.get("ticker", "")
-                title = (m.get("title", "") or "").lower()
-                # Filter for crypto price contracts
-                if not any(kw in title for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]):
+
+        now = time.time()
+        if self._crypto_cache and (now - self._crypto_cache_time) < self._CRYPTO_CACHE_TTL:
+            return self._crypto_cache
+
+        markets: list[KalshiMarket] = []
+        seen: set[str] = set()
+        per_series: dict[str, int] = {}
+
+        # Only fetch markets whose close_time is in the future. This keeps
+        # pykalshi from walking back through months of settled history and
+        # triggering Kalshi's rate limit.
+        min_close_ts = int(now)
+
+        for series in self.CRYPTO_SERIES:
+            kwargs: dict = {
+                "series_ticker": series,
+                "limit": 200,
+                "fetch_all": False,  # ONE page only — no history crawl
+                "min_close_ts": min_close_ts,
+            }
+            if MarketStatus is not None:
+                kwargs["status"] = MarketStatus.OPEN
+            try:
+                raw = self._client.get_markets(**kwargs)
+            except TypeError:
+                # pykalshi may not accept min_close_ts — drop and retry
+                kwargs.pop("min_close_ts", None)
+                try:
+                    raw = self._client.get_markets(**kwargs)
+                except Exception as exc:
+                    logger.debug("Kalshi series %s failed: %s", series, exc)
+                    per_series[series] = 0
                     continue
-                market = self._parse_market(m)
-                if market:
-                    markets.append(market)
-            return markets
+            except Exception as exc:
+                logger.debug("Kalshi series %s failed: %s", series, exc)
+                per_series[series] = 0
+                continue
+
+            try:
+                page = list(raw or [])
+            except TypeError:
+                page = []
+
+            per_series[series] = len(page)
+
+            for m in page:
+                ticker = str(getattr(m, "ticker", "") or "")
+                if not ticker or ticker in seen:
+                    continue
+                parsed = self._parse_market_obj(m)
+                if parsed:
+                    seen.add(ticker)
+                    markets.append(parsed)
+
+        hits = {k: v for k, v in per_series.items() if v}
+        logger.info(
+            "Fetched %d open crypto contracts from Kalshi (raw per series: %s)",
+            len(markets), hits or "none",
+        )
+
+        # Publish fetch stats to the dashboard so we can verify remotely.
+        try:
+            import shared_state
+            if markets:
+                shared_state.record_kalshi_fetch(len(markets), per_series)
+            else:
+                shared_state.record_kalshi_error(
+                    f"0 markets; per_series={per_series}"
+                )
+        except Exception:
+            pass
+
+        self._crypto_cache = markets
+        self._crypto_cache_time = now
+        return markets
+
+    @staticmethod
+    def _enum_str(v: Any) -> str:
+        """Normalize a pykalshi enum (MarketStatus.OPEN) or string to lowercase."""
+        if v is None:
+            return ""
+        # pykalshi uses Python enums — .value gives the wire string
+        val = getattr(v, "value", None)
+        if val is None:
+            val = getattr(v, "name", None)
+        if val is None:
+            val = v
+        return str(val).lower()
+
+    def _parse_market_obj(self, m: Any) -> Optional[KalshiMarket]:
+        """Parse a pykalshi Market object into our KalshiMarket dataclass."""
+        try:
+            ticker = str(getattr(m, "ticker", "") or "")
+            if not ticker:
+                return None
+
+            status = self._enum_str(getattr(m, "status", None))
+            result = self._enum_str(getattr(m, "result", None))
+            settled = result in ("yes", "no") or status in (
+                "settled", "finalized", "closed", "determined",
+            )
+            if settled:
+                return None
+            if status not in ("open", "active", ""):
+                return None
+
+            yes_price = (
+                getattr(m, "yes_ask_dollars", None)
+                or getattr(m, "last_price_dollars", None)
+                or 0.50
+            )
+            if isinstance(yes_price, (int, float)) and yes_price > 1:
+                yes_price = yes_price / 100.0
+            yes_price = float(yes_price)
+
+            close_time = str(getattr(m, "close_time", "") or "")
+            end_ts = 0
+            if close_time:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                    end_ts = int(dt.timestamp())
+                except (ValueError, TypeError):
+                    pass
+
+            full_title = str(getattr(m, "title", "") or "")
+            subtitle = str(getattr(m, "subtitle", "") or "")
+            title_l = full_title.lower()
+
+            asset = "BTC"
+            if ticker.startswith("KXETH") or ticker.startswith("ETH") or "ethereum" in title_l:
+                asset = "ETH"
+
+            strike = self._extract_strike(subtitle) or self._extract_strike(full_title)
+
+            combined = (title_l + " " + subtitle.lower())
+            direction = "below" if any(
+                w in combined for w in ("below", "under", "less than")
+            ) else "above"
+
+            return KalshiMarket(
+                ticker=ticker,
+                title=full_title,
+                category="crypto",
+                yes_price=round(yes_price, 4),
+                no_price=round(1.0 - yes_price, 4),
+                volume=float(getattr(m, "volume_fp", 0) or 0),
+                close_time_ts=end_ts,
+                asset=asset,
+                strike=strike,
+                direction=direction,
+                active=True,
+                settled=False,
+            )
         except Exception as exc:
-            logger.error("Failed to fetch Kalshi markets: %s", exc)
-            return []
+            logger.debug("Failed to parse Kalshi market: %s", exc)
+            return None
 
     def _parse_market(self, m: dict) -> Optional[KalshiMarket]:
         try:
@@ -196,7 +369,7 @@ class KalshiClient:
                 params["no_price"] = price_cents
 
             resp = self._client.create_order(**params)
-            order = resp.get("order", resp)
+            order = resp if isinstance(resp, dict) else {k: getattr(resp, k, None) for k in ['order_id', 'status', 'yes_price', 'no_price']}
 
             return KalshiOrder(
                 success=True,
@@ -207,6 +380,60 @@ class KalshiClient:
         except Exception as exc:
             logger.error("Kalshi order failed: %s", exc)
             return KalshiOrder(success=False, error=str(exc))
+
+    def get_market(self, ticker: str) -> Optional[dict]:
+        """Fetch current state of a specific market by ticker."""
+        if not self._client:
+            return None
+        try:
+            m = self._client.get_market(ticker)
+            return {
+                'ticker': getattr(m, 'ticker', ''),
+                'title': getattr(m, 'title', ''),
+                'yes_ask': getattr(m, 'yes_ask_dollars', None),
+                'last_price': getattr(m, 'last_price_dollars', None),
+                'status': str(getattr(m, 'status', '')),
+                'result': str(getattr(m, 'result', '') or ''),
+                'close_time': str(getattr(m, 'close_time', '') or ''),
+                'volume': getattr(m, 'volume_fp', 0),
+            }
+        except Exception as exc:
+            logger.error("Failed to get market %s: %s", ticker, exc)
+            return None
+
+    def get_market_price(self, ticker: str) -> Optional[float]:
+        """Get the current YES price for a market."""
+        market = self.get_market(ticker)
+        if not market:
+            return None
+        yes_ask = market.get("yes_ask")
+        yes_price = yes_ask if yes_ask is not None else market.get("last_price")
+        if yes_price is None:
+            return None
+        if isinstance(yes_price, (int, float)) and yes_price > 1:
+            yes_price = yes_price / 100.0
+        return round(float(yes_price), 4)
+
+    def check_settlement(self, ticker: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if a Kalshi contract has settled.
+
+        Returns:
+            (is_settled, result) where result is "yes", "no", or None if not settled.
+        """
+        market = self.get_market(ticker)
+        if not market:
+            return False, None
+
+        status = market.get("status", "")
+        result = market.get("result", "")
+
+        if status in ("settled", "finalized", "closed") and result:
+            return True, result.lower()
+        if result and result.lower() in ("yes", "no"):
+            return True, result.lower()
+
+        return False, None
 
     def cancel_all(self) -> None:
         if self._paper_mode:

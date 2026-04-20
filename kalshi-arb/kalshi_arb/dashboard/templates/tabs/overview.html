@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Overview — kalshi-arb{% endblock %}
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-2xl font-bold text-slate-100">Overview</h1>
+  <div id="overview-bot-status"
+       class="rounded px-3 py-1 text-sm font-semibold border
+              {% if data.bot_status == 'LIVE' %}text-emerald-300 border-emerald-700 bg-emerald-900/30
+              {% elif data.bot_status == 'KILL-SWITCH' %}text-red-300 border-red-700 bg-red-900/40
+              {% elif data.bot_status == 'DEGRADED' %}text-amber-300 border-amber-700 bg-amber-900/40
+              {% else %}text-slate-300 border-slate-700 bg-slate-800/60{% endif %}">
+    {{ data.bot_status }}
+  </div>
+</div>
+<p class="text-slate-400 text-sm mt-1">At-a-glance bot state. Tiles update live via SSE as change_log rows arrive.</p>
+
+<section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Realized P&amp;L</div>
+    <div id="ov-realized" class="mt-1 text-3xl font-mono
+         {% if data.tiles.realized_cents > 0 %}text-emerald-300
+         {% elif data.tiles.realized_cents < 0 %}text-red-300
+         {% else %}text-slate-200{% endif %}">
+      {{ data.tiles.realized_fmt }}
+    </div>
+    <div class="mt-1 text-xs text-slate-500">Sum of pnl_realized.net_cents across all settled arbs.</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Estimated (open)</div>
+    <div id="ov-estimated" class="mt-1 text-3xl font-mono text-slate-200">
+      {{ data.tiles.estimated_fmt }}
+    </div>
+    <div class="mt-1 text-xs text-slate-500">edge * size for emitted opps without realized P&amp;L yet.</div>
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Opportunities today</div>
+    <div id="ov-opps-today" class="mt-1 text-3xl font-mono text-cyan-300">
+      {{ data.tiles.opportunities_today }}
+    </div>
+    <div class="mt-1 text-xs text-slate-500">Count since 00:00 UTC.</div>
+  </div>
+</section>
+
+<section class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
+  <div class="flex items-baseline justify-between">
+    <div class="text-sm text-slate-400">Decisions per minute (last 6 h)</div>
+    <div class="text-xs text-slate-600">1-minute buckets</div>
+  </div>
+  {% if data.decisions_per_minute %}
+    <div class="mt-3 h-48">
+      <canvas id="chart-decisions-per-minute"></canvas>
+    </div>
+  {% else %}
+    <div class="mt-6 py-8 text-center text-slate-500 text-sm">
+      No decisions recorded in the last 6 hours. Run the bot to populate.
+    </div>
+  {% endif %}
+</section>
+
+<section class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-sm text-slate-400">Last 5 opportunities</div>
+    {% if data.recent_opportunities %}
+      <ul id="ov-recent-opportunities" class="mt-3 divide-y divide-slate-800 text-sm">
+        {% for o in data.recent_opportunities %}
+          <li class="py-2 flex justify-between items-center"
+              data-opp-id="{{ o.id }}">
+            <div>
+              <div class="font-mono text-cyan-300">{{ o.ticker }}</div>
+              <div class="text-xs text-slate-500">{{ o.ts_iso }} — {{ o.decision }}</div>
+            </div>
+            <div class="font-mono {% if o.decision == 'emit' %}text-emerald-300{% else %}text-slate-500{% endif %}">
+              edge {{ '%.2f' | format(o.net_edge_cents) }}¢ × {{ o.final_size }}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+        No opportunities yet. Run the bot to populate.
+      </div>
+    {% endif %}
+  </div>
+  <div class="rounded border border-slate-800 bg-slate-950 p-4">
+    <div class="text-sm text-slate-400">Last 5 executions</div>
+    {% if data.recent_executions %}
+      <ul id="ov-recent-executions" class="mt-3 divide-y divide-slate-800 text-sm">
+        {% for e in data.recent_executions %}
+          <li class="py-2 flex justify-between items-center"
+              data-opp-id="{{ e.opportunity_id }}">
+            <div>
+              <div class="font-mono text-cyan-300">{{ e.ticker }}</div>
+              <div class="text-xs text-slate-500">{{ e.ts_iso }}</div>
+            </div>
+            <div class="font-mono text-xs
+                 {% if e.ok_legs == e.legs %}text-emerald-300{% else %}text-amber-300{% endif %}">
+              {{ e.ok_legs }}/{{ e.legs }} legs ok
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="mt-4 py-6 text-center text-slate-500 text-sm">
+        No executions yet. Run the bot to populate.
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+<script type="application/json" id="sse-handlers">
+{
+  "opportunity": {"refresh": "/overview/data"},
+  "order_placed": {"refresh": "/overview/data"},
+  "order_filled": {"refresh": "/overview/data"},
+  "pnl_realized": {"refresh": "/overview/data"},
+  "kill_switch": {"refresh": "/overview/data"},
+  "degraded":    {"refresh": "/overview/data"}
+}
+</script>
+{% endblock %}

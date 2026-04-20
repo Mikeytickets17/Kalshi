@@ -1,0 +1,27 @@
+.env
+*.pem
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+data/
+logs/
+KILL_SWITCH
+config/detected_limits.yaml
+.venv/
+.DS_Store
+
+# Dashboard launcher artifacts (per-laptop, not in repo)
+.dashboard_creds
+dashboard_url.txt
+bin/cloudflared
+bin/cloudflared.exe

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .env
 bot.log
+bot_state.json
+research_log.json
+*.pem

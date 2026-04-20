@@ -38,10 +38,18 @@ class OrderBookSnapshot:
     best_ask: float = 0.0
     bid_depth_10: float = 0.0   # Total USD within 0.1% of best bid
     ask_depth_10: float = 0.0   # Total USD within 0.1% of best ask
+    bid_depth_25: float = 0.0   # Total USD within 0.25%
+    ask_depth_25: float = 0.0
     bid_depth_50: float = 0.0   # Total USD within 0.5% of best bid
     ask_depth_50: float = 0.0   # Total USD within 0.5% of best ask
+    bid_depth_100: float = 0.0  # Total USD within 1.0%
+    ask_depth_100: float = 0.0
     spread_pct: float = 0.0     # Bid-ask spread as percentage
-    imbalance: float = 0.0      # -1 (all sell) to +1 (all buy)
+    imbalance: float = 0.0      # -1 (all sell) to +1 (all buy) near TOB
+    imbalance_deep: float = 0.0 # imbalance at 0.5% depth
+    book_pressure: float = 0.0  # -1 to +1, multi-level weighted pressure
+    bid_wall: float = 0.0       # largest single bid level USD
+    ask_wall: float = 0.0       # largest single ask level USD
 
     @property
     def mid_price(self) -> float:
@@ -141,7 +149,7 @@ class OrderBookReader:
                 await asyncio.sleep(2)
 
     def _update_book(self, symbol: str, data: dict) -> None:
-        """Parse depth update into OrderBookSnapshot."""
+        """Parse depth update into OrderBookSnapshot with multi-level analysis."""
         bids = data.get("bids", [])
         asks = data.get("asks", [])
 
@@ -152,26 +160,57 @@ class OrderBookReader:
         best_ask = float(asks[0][0])
         mid = (best_bid + best_ask) / 2
 
-        # Calculate depth at different levels
-        bid_10 = sum(float(b[0]) * float(b[1]) for b in bids if float(b[0]) >= mid * 0.999)
-        ask_10 = sum(float(a[0]) * float(a[1]) for a in asks if float(a[0]) <= mid * 1.001)
-        bid_50 = sum(float(b[0]) * float(b[1]) for b in bids if float(b[0]) >= mid * 0.995)
-        ask_50 = sum(float(a[0]) * float(a[1]) for a in asks if float(a[0]) <= mid * 1.005)
+        # Multi-level depth calculation
+        levels = [0.001, 0.0025, 0.005, 0.01]  # 0.1%, 0.25%, 0.5%, 1.0%
+        bid_depths = []
+        ask_depths = []
+        for lvl in levels:
+            bd = sum(float(b[0]) * float(b[1]) for b in bids if float(b[0]) >= mid * (1 - lvl))
+            ad = sum(float(a[0]) * float(a[1]) for a in asks if float(a[0]) <= mid * (1 + lvl))
+            bid_depths.append(bd)
+            ask_depths.append(ad)
 
-        total_near = bid_10 + ask_10
-        imbalance = (bid_10 - ask_10) / total_near if total_near > 0 else 0
+        # Near-TOB imbalance (0.1%)
+        total_near = bid_depths[0] + ask_depths[0]
+        imbalance = (bid_depths[0] - ask_depths[0]) / total_near if total_near > 0 else 0
+
+        # Deep imbalance (0.5%)
+        total_deep = bid_depths[2] + ask_depths[2]
+        imbalance_deep = (bid_depths[2] - ask_depths[2]) / total_deep if total_deep > 0 else 0
+
+        # Book pressure: weighted combination of imbalances at multiple levels
+        # Near levels matter more (they're about to get hit)
+        weights = [0.40, 0.25, 0.20, 0.15]
+        pressure = 0.0
+        for i, w in enumerate(weights):
+            total = bid_depths[i] + ask_depths[i]
+            if total > 0:
+                lvl_imb = (bid_depths[i] - ask_depths[i]) / total
+                pressure += lvl_imb * w
+
+        # Wall detection: find largest single bid/ask level
+        bid_wall = max((float(b[0]) * float(b[1]) for b in bids), default=0)
+        ask_wall = max((float(a[0]) * float(a[1]) for a in asks), default=0)
 
         self._books[symbol] = OrderBookSnapshot(
             asset=symbol.replace("USDT", ""),
             timestamp=time.time(),
             best_bid=best_bid,
             best_ask=best_ask,
-            bid_depth_10=bid_10,
-            ask_depth_10=ask_10,
-            bid_depth_50=bid_50,
-            ask_depth_50=ask_50,
+            bid_depth_10=bid_depths[0],
+            ask_depth_10=ask_depths[0],
+            bid_depth_25=bid_depths[1],
+            ask_depth_25=ask_depths[1],
+            bid_depth_50=bid_depths[2],
+            ask_depth_50=ask_depths[2],
+            bid_depth_100=bid_depths[3],
+            ask_depth_100=ask_depths[3],
             spread_pct=(best_ask - best_bid) / mid * 100 if mid > 0 else 0,
             imbalance=round(imbalance, 4),
+            imbalance_deep=round(imbalance_deep, 4),
+            book_pressure=round(max(-1, min(1, pressure)), 4),
+            bid_wall=round(bid_wall, 2),
+            ask_wall=round(ask_wall, 2),
         )
 
     async def _stream_trades(self, symbol: str) -> None:

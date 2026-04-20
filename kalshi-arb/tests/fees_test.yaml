@@ -1,0 +1,11 @@
+# Synthetic two-regime fee schedule for testing.
+# NOT shipped to production. Only used by tests/test_fees.py to prove that
+# date-keyed regimes return different values and don't silently flatten.
+tiers:
+  - effective_from: "2025-01-01"
+    taker_coeff: 0.07   # Kalshi's documented 7% regime
+    maker_coeff: 0.0
+
+  - effective_from: "2026-04-30"
+    taker_coeff: 0.035  # hypothetical promotional half-off window
+    maker_coeff: -0.02  # hypothetical maker rebate during promo

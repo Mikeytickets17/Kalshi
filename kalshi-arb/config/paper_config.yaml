@@ -1,0 +1,31 @@
+# Paper-mode fill model.
+#
+# During the first Module 3 -> paper smoke test phase, set partial_fill_rate
+# HIGH (0.4+) to exercise the unwind path with realistic frequency.
+# Before the 48h prod-paper run, restore to the conservative defaults
+# below (85/10/5) which approximate Kalshi IOC fill behavior on liquid
+# BTC/ETH markets. Real numbers replace these once the prod probe runs.
+
+fill_model:
+  # Three buckets, must sum to 1.0.
+  full_fill_rate: 0.85         # IOC immediately clears at limit
+  partial_fill_rate: 0.10      # book had some size at limit but not all
+  zero_fill_rate: 0.05         # nothing available at limit, IOC expires
+  # When partial: uniform fill fraction between min and max.
+  partial_min_pct: 0.50
+  partial_max_pct: 0.95
+
+# Unwind slippage (paper mode only). Real unwind is a market SELL; we fill
+# at best_bid, which is typically 1-2 cents below best_ask. 1c is a
+# conservative estimate for liquid markets; widen this when we capture
+# real numbers during the 48h run.
+unwind_slippage_cents: 1
+
+# Fees. If true, use the same FeeModel.builtin() the scanner uses so paper
+# P&L matches the live accounting. If false, zero fees (DO NOT use in 48h).
+use_builtin_fees: true
+
+# Deterministic replay: fixed seed makes paper-mode runs reproducible.
+# null = use system entropy (appropriate for the 48h run).
+# Tests MUST set this to a fixed integer.
+rng_seed: null

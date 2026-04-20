@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Opportunities — kalshi-arb{% endblock %}
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-2xl font-bold text-slate-100">Opportunities</h1>
+  <div class="text-xs text-slate-500">Total matched: <span class="text-slate-300">{{ data.total }}</span></div>
+</div>
+<p class="text-slate-400 text-sm mt-1">Every scanner decision. Click a row for the fee math, sizer decomposition, and linked execution.</p>
+
+<form id="opps-filter-form" class="mt-4 flex flex-wrap gap-2 items-end text-xs text-slate-300">
+  <label class="flex flex-col">
+    <span class="mb-1 text-slate-500">Time window</span>
+    <select name="hours" class="bg-slate-900 border border-slate-800 px-2 py-1 rounded">
+      <option value="">all</option>
+      <option value="1">last 1 h</option>
+      <option value="6">last 6 h</option>
+      <option value="24">last 24 h</option>
+      <option value="168">last 7 d</option>
+    </select>
+  </label>
+  <label class="flex flex-col">
+    <span class="mb-1 text-slate-500">Ticker contains</span>
+    <input name="ticker" type="text" placeholder="KXBTC"
+           class="bg-slate-900 border border-slate-800 px-2 py-1 rounded"/>
+  </label>
+  <label class="flex flex-col">
+    <span class="mb-1 text-slate-500">Decision</span>
+    <select name="decision" class="bg-slate-900 border border-slate-800 px-2 py-1 rounded">
+      <option value="">any</option>
+      <option value="emit">emit</option>
+      <option value="skip">any skip</option>
+      <option value="skip_below_edge">skip_below_edge</option>
+      <option value="skip_below_profit">skip_below_profit</option>
+      <option value="skip_halted">skip_halted</option>
+      <option value="skip_empty_side">skip_empty_side</option>
+    </select>
+  </label>
+  <label class="flex flex-col">
+    <span class="mb-1 text-slate-500">Min edge (¢)</span>
+    <input name="min_edge" type="number" step="0.1" placeholder="0"
+           class="bg-slate-900 border border-slate-800 px-2 py-1 rounded w-24"/>
+  </label>
+  <button type="submit"
+          class="bg-cyan-700 hover:bg-cyan-600 text-white px-3 py-1 rounded">Apply</button>
+  <button type="button" id="opps-filter-reset"
+          class="bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded">Reset</button>
+  <a id="opps-csv-link" href="/opportunities/export.csv" download
+     class="ml-auto bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded text-emerald-300 border border-emerald-800">
+    Export CSV
+  </a>
+</form>
+
+<div class="mt-4 rounded border border-slate-800 bg-slate-950 overflow-hidden">
+  {% if data.rows %}
+  <table id="opps-table" class="w-full text-sm">
+    <thead class="bg-slate-900 text-slate-400 text-xs uppercase">
+      <tr>
+        <th class="px-3 py-2 text-left cursor-pointer" data-sort="ts_ms">Timestamp</th>
+        <th class="px-3 py-2 text-left cursor-pointer" data-sort="ticker">Ticker</th>
+        <th class="px-3 py-2 text-right cursor-pointer" data-sort="sum_cents">YES / NO / sum</th>
+        <th class="px-3 py-2 text-right cursor-pointer" data-sort="net_edge_cents">Net edge (¢)</th>
+        <th class="px-3 py-2 text-left cursor-pointer" data-sort="decision">Decision</th>
+        <th class="px-3 py-2 text-right cursor-pointer" data-sort="final_size">Sizer → final</th>
+      </tr>
+    </thead>
+    <tbody id="opps-table-body" class="divide-y divide-slate-800">
+      {% for r in data.rows %}
+        <tr class="row-clickable" data-opp-id="{{ r.id }}">
+          <td class="px-3 py-2 text-slate-400 font-mono text-xs">{{ r.ts_iso }}</td>
+          <td class="px-3 py-2 text-cyan-300 font-mono">{{ r.ticker }}</td>
+          <td class="px-3 py-2 text-right font-mono">
+            {{ r.yes_ask_cents }} / {{ r.no_ask_cents }} / <span class="text-slate-400">{{ r.sum_cents }}</span>
+          </td>
+          <td class="px-3 py-2 text-right font-mono
+                   {% if r.net_edge_cents > 0 %}text-emerald-300{% else %}text-slate-400{% endif %}">
+            {{ '%.2f' | format(r.net_edge_cents) }}
+          </td>
+          <td class="px-3 py-2">
+            {% if r.decision == 'emit' %}
+              <span class="inline-block px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 text-xs">emit</span>
+            {% else %}
+              <span class="inline-block px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-xs">{{ r.decision }}</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-2 text-right font-mono text-slate-300">{{ r.final_size }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="py-12 text-center text-slate-500 text-sm">
+      No opportunities match the current filters. Run the bot to populate,
+      or widen the filters above.
+    </div>
+  {% endif %}
+</div>
+
+<script type="application/json" id="sse-handlers">
+{
+  "opportunity": {"refresh": "__current__"}
+}
+</script>
+{% endblock %}

@@ -1,0 +1,513 @@
+"""One-shot diagnostic probe.
+
+Measures four unknowns and writes them to config/detected_limits.yaml so the
+rest of the system sizes itself against real numbers instead of guesses.
+
+Probes
+------
+1. WS subscription cap — how many tickers can ONE WebSocket connection
+   subscribe to via orderbook_delta before Kalshi rejects or silently drops.
+2. REST write latency distribution — p50/p95/p99 round-trip for order placement
+   (uses demo mode at prices that never fill so we don't leak capital).
+3. REST rate-limit ceiling — ramp request rate on GET /exchange/status until
+   429, record the ceiling and Retry-After.
+4. End-to-end arb loop latency — WS book update → detection → demo order
+   fire → fill confirmation. SKIPPED in demo mode: demo market activity is
+   too thin to produce meaningful numbers. Measured during the prod paper
+   trading phase instead.
+
+Run
+---
+    python -m kalshi_arb.probe.probe
+
+Results land at config/detected_limits.yaml. If AUTO_PUBLISH=true the script
+commits the yaml back to a dedicated branch so remote reviewers can read it
+without shell access. Default is AUTO_PUBLISH=false — run once, review the
+yaml, then flip and rerun to publish.
+
+Every result block carries `environment: demo|prod` and a `notes` field so
+downstream consumers never confuse demo-measured numbers for prod capacity.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import statistics
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .. import clock, log
+from ..config import CATEGORY_PREFIXES, Config
+from ..rest.client import RestClient, RestConfig
+
+_log = log.get("probe")
+
+RESULTS_PATH = Path("config/detected_limits.yaml")
+
+# Demo note — appended to every measurement block so readers never mistake
+# a demo number for a production one.
+DEMO_NOTES = (
+    "Measured in demo environment. Production values may differ — especially "
+    "REST rate-limit ceiling (production is tier-gated) and message volume "
+    "(production markets have vastly higher activity)."
+)
+
+
+@dataclass
+class ProbeResults:
+    ts_utc: str = ""
+    demo_mode: bool = True
+    ws_subscription: dict[str, Any] = field(default_factory=dict)
+    rest_write_latency_ms: dict[str, Any] = field(default_factory=dict)
+    rest_rate_limit: dict[str, Any] = field(default_factory=dict)
+    end_to_end_loop_ms: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+
+async def probe_ws_subscription_cap(
+    rest: RestClient, ceiling_tickers: list[str]
+) -> dict[str, Any]:
+    """Subscribe to orderbook_delta on an expanding slice of tickers.
+
+    We grow the slice in steps of 50 and watch for: (a) Kalshi-side error
+    responses, (b) silent drop-offs where message flow stops for >10s after
+    the subscribe acknowledgement.
+    """
+    _log.info("probe.ws.start", ceiling=len(ceiling_tickers))
+    result: dict[str, Any] = {
+        "max_confirmed_tickers": 0,
+        "failed_at_tickers": None,
+        "failure_mode": None,
+        "steps": [],
+    }
+    step_size = 50
+    feed = rest.async_underlying().feed()
+    msg_counter: dict[str, int] = {}
+
+    async with feed as f:
+        @f.on("orderbook_delta")
+        def _count(msg: Any) -> None:
+            t = getattr(msg, "market_ticker", None) or (
+                msg.get("market_ticker") if isinstance(msg, dict) else None
+            )
+            if t:
+                msg_counter[t] = msg_counter.get(t, 0) + 1
+
+        for upper in range(step_size, len(ceiling_tickers) + 1, step_size):
+            slice_ = ceiling_tickers[:upper]
+            try:
+                f.subscribe("orderbook_delta", market_tickers=slice_)
+            except Exception as exc:  # noqa: BLE001
+                result["failed_at_tickers"] = upper
+                result["failure_mode"] = f"subscribe_error: {exc}"
+                _log.warning("probe.ws.subscribe_rejected", at=upper, error=str(exc))
+                break
+
+            # Wait for at least one message from ≥25% of slice or 10s timeout.
+            before = sum(1 for t in slice_ if msg_counter.get(t))
+            wait_start = time.monotonic()
+            while time.monotonic() - wait_start < 10.0:
+                active = sum(1 for t in slice_ if msg_counter.get(t))
+                if active - before >= max(1, len(slice_) // 4):
+                    break
+                await asyncio.sleep(0.5)
+
+            active = sum(1 for t in slice_ if msg_counter.get(t))
+            result["steps"].append(
+                {
+                    "subscribed": upper,
+                    "receiving_messages": active,
+                    "coverage_pct": round(100 * active / max(1, upper), 1),
+                }
+            )
+            _log.info("probe.ws.step", subscribed=upper, active=active)
+            if active < upper * 0.25 and upper > step_size:
+                result["failed_at_tickers"] = upper
+                result["failure_mode"] = f"silent_drop_off at {active}/{upper}"
+                break
+            result["max_confirmed_tickers"] = upper
+
+    return result
+
+
+async def probe_rest_write_latency(rest: RestClient, ticker: str, samples: int = 100) -> dict[str, Any]:
+    """Fire non-filling demo orders and measure placement round-trip.
+
+    Uses a price of 1¢ on YES so no marketable cross happens. Immediately
+    cancels every order after placement. Captures the first 5 distinct
+    errors so we can see WHY failures happen, not just count them.
+    """
+    from ..common.errors import ErrorCapture
+
+    _log.info("probe.rest_write.start", samples=samples, ticker=ticker)
+    latencies_ms: list[float] = []
+    errors = ErrorCapture(max_unique=5)
+
+    for i in range(samples):
+        t0 = time.monotonic()
+        order_id = None
+        try:
+            resp = await asyncio.to_thread(
+                rest.underlying.create_order,
+                ticker=ticker,
+                action="buy",
+                side="yes",
+                type="limit",
+                count=1,
+                yes_price=1,
+            )
+            latency_ms = (time.monotonic() - t0) * 1000
+            latencies_ms.append(latency_ms)
+            errors.record_success()
+            order_id = getattr(resp, "order_id", None) or (
+                resp.get("order_id") if isinstance(resp, dict) else None
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.record(exc, context={"iter": i, "ticker": ticker, "action": "buy", "yes_price": 1})
+        finally:
+            if order_id:
+                try:
+                    await asyncio.to_thread(rest.underlying.cancel_order, order_id=order_id)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+        await asyncio.sleep(0.2)
+
+    if not latencies_ms:
+        return {
+            "samples": samples,
+            "successful": 0,
+            "errors_summary": errors.to_dict(),
+            "note": "all requests failed -- see errors_summary.samples for cause",
+        }
+    latencies_ms.sort()
+    return {
+        "samples": len(latencies_ms),
+        "successful": len(latencies_ms),
+        "errors_summary": errors.to_dict(),
+        "p50_ms": round(statistics.median(latencies_ms), 1),
+        "p95_ms": round(latencies_ms[int(0.95 * len(latencies_ms)) - 1], 1),
+        "p99_ms": round(latencies_ms[int(0.99 * len(latencies_ms)) - 1], 1),
+        "max_ms": round(max(latencies_ms), 1),
+    }
+
+
+async def probe_rest_rate_limit(rest: RestClient) -> dict[str, Any]:
+    """Ramp request rate until 429 against a known-working endpoint.
+
+    We hit GET /markets?limit=1 (confirmed to work on both demo + prod for
+    every auth tier). Previously used /exchange/status but that endpoint is
+    not exposed on demo and every call 404s, poisoning the result.
+
+    Ramps 1, 2, 5, 10, 20, 40 req/s in 3-second bursts. First burst that
+    produces a 429 is recorded as the ceiling. Errors are captured with
+    status code + message so non-429 failures (auth, network) are visible.
+    """
+    from ..common.errors import ErrorCapture
+
+    _log.info("probe.rest_ratelimit.start")
+    errors = ErrorCapture(max_unique=5)
+    result: dict[str, Any] = {
+        "endpoint": "/markets?limit=1",
+        "rates_tested": [],
+        "limit_hit_at_rps": None,
+        "retry_after_sec": None,
+        "errors_summary": None,
+    }
+    rates = [1, 2, 5, 10, 20, 40]
+    for rps in rates:
+        burst_duration = 3.0
+        sleep = 1.0 / rps
+        e_count = 0
+        ok = 0
+        retry_after: float | None = None
+        t_start = time.monotonic()
+        while time.monotonic() - t_start < burst_duration:
+            t0 = time.monotonic()
+            try:
+                await asyncio.to_thread(rest.underlying.get_markets, limit=1, fetch_all=False)
+                ok += 1
+                errors.record_success()
+            except Exception as exc:  # noqa: BLE001
+                e_count += 1
+                errors.record(exc, context={"rps": rps, "endpoint": "/markets?limit=1"})
+                msg = str(exc)
+                if "429" in msg:
+                    import re
+
+                    m = re.search(r"retry[_\- ]after[:=]\s*(\d+(?:\.\d+)?)", msg, re.IGNORECASE)
+                    if m:
+                        retry_after = float(m.group(1))
+                    result["limit_hit_at_rps"] = rps
+                    result["retry_after_sec"] = retry_after
+                    break
+            elapsed = time.monotonic() - t0
+            if elapsed < sleep:
+                await asyncio.sleep(sleep - elapsed)
+        result["rates_tested"].append({"rps": rps, "ok": ok, "errors": e_count})
+        _log.info("probe.rest_ratelimit.step", rps=rps, ok=ok, errors=e_count)
+        if result["limit_hit_at_rps"] is not None:
+            break
+        await asyncio.sleep(2.0)
+    result["errors_summary"] = errors.to_dict()
+    return result
+
+
+async def probe_end_to_end_loop(rest: RestClient, ticker: str, wait_sec: float = 30.0) -> dict[str, Any]:
+    """Measure WS-event → REST-fire round-trip on a real liquid ticker."""
+    _log.info("probe.e2e.start", ticker=ticker, wait_sec=wait_sec)
+    result: dict[str, Any] = {"events_seen": 0, "orders_fired": 0, "latency_ms": []}
+    feed = rest.async_underlying().feed()
+    start = time.monotonic()
+
+    async with feed as f:
+        event_queue: asyncio.Queue[tuple[float, Any]] = asyncio.Queue()
+
+        @f.on("orderbook_delta")
+        def _cap(msg: Any) -> None:
+            event_queue.put_nowait((time.monotonic(), msg))
+
+        f.subscribe("orderbook_delta", market_tickers=[ticker])
+
+        while time.monotonic() - start < wait_sec:
+            try:
+                event_ts, _msg = await asyncio.wait_for(event_queue.get(), timeout=5.0)
+            except TimeoutError:
+                continue
+            result["events_seen"] += 1
+            # Fire a non-filling demo order immediately and measure.
+            order_id = None
+            try:
+                resp = await asyncio.to_thread(
+                    rest.underlying.create_order,
+                    ticker=ticker,
+                    action="buy",
+                    side="yes",
+                    type="limit",
+                    count=1,
+                    yes_price=1,
+                )
+                roundtrip_ms = (time.monotonic() - event_ts) * 1000
+                result["latency_ms"].append(round(roundtrip_ms, 1))
+                result["orders_fired"] += 1
+                order_id = getattr(resp, "order_id", None) or (
+                    resp.get("order_id") if isinstance(resp, dict) else None
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("probe.e2e.fire_failed", error=str(exc))
+            finally:
+                if order_id:
+                    try:
+                        await asyncio.to_thread(rest.underlying.cancel_order, order_id=order_id)
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+            # Don't hammer — 1 firing per event is enough; cap at 30 samples.
+            if result["orders_fired"] >= 30:
+                break
+
+    lats = result.pop("latency_ms")
+    if lats:
+        lats.sort()
+        result["p50_ms"] = round(statistics.median(lats), 1)
+        result["p95_ms"] = round(lats[int(0.95 * len(lats)) - 1], 1)
+        result["p99_ms"] = round(lats[int(0.99 * len(lats)) - 1], 1)
+        result["samples"] = len(lats)
+    return result
+
+
+async def run() -> ProbeResults:
+    cfg = Config.load()
+    if not cfg.kalshi_use_demo:
+        raise RuntimeError(
+            "Probe MUST run in demo mode. Set KALSHI_USE_DEMO=true before running."
+        )
+    if not cfg.kalshi_api_key_id:
+        raise RuntimeError("KALSHI_API_KEY_ID not set; create .env first.")
+
+    rest = RestClient(
+        RestConfig(
+            api_key_id=cfg.kalshi_api_key_id,
+            private_key_path=cfg.kalshi_private_key_path,
+            use_demo=True,
+        )
+    )
+
+    # Instantiate results BEFORE anything that might append to it. Previous
+    # regression: fallback branch appended to results.notes before the
+    # dataclass was constructed, crashing with UnboundLocalError.
+    results = ProbeResults(
+        ts_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        demo_mode=True,
+    )
+
+    # Build a ticker pool from the first whitelisted category that has >=50
+    # open markets. Demo may have fewer markets than prod; we adapt.
+    prefixes: tuple[str, ...] = ()
+    for cat in cfg.universe_categories:
+        prefixes = prefixes + CATEGORY_PREFIXES.get(cat, ())
+    # Try category-whitelisted tickers first (cheap, likely empty on demo).
+    pool = await asyncio.to_thread(rest.list_open_markets, series_prefixes=prefixes, limit=1000)
+    pool_tickers = [m.ticker for m in pool]
+    if not pool_tickers:
+        # Demo has few crypto/weather/econ tickers; fall back to 500 of anything.
+        # Capped so we don't paginate through 10k+ demo markets on every probe.
+        pool = await asyncio.to_thread(rest.list_open_markets, limit=500)
+        pool_tickers = [m.ticker for m in pool]
+        results.notes.append(
+            f"Category whitelist {list(cfg.universe_categories)} returned 0 markets "
+            f"on demo; fell back to first {len(pool_tickers)} open markets of any kind."
+        )
+    _log.info("probe.pool", count=len(pool_tickers))
+    # 1. WS cap
+    results.ws_subscription = await probe_ws_subscription_cap(rest, pool_tickers[:500])
+
+    # 2+4 need a known-liquid ticker. Pick highest 24h volume.
+    if pool:
+        pool.sort(key=lambda m: m.volume_24h, reverse=True)
+        liquid_ticker = pool[0].ticker
+    else:
+        liquid_ticker = pool_tickers[0] if pool_tickers else ""
+
+    if liquid_ticker:
+        results.rest_write_latency_ms = await probe_rest_write_latency(rest, liquid_ticker)
+    else:
+        results.notes.append("No liquid ticker available; REST write probe skipped.")
+
+    # 3. REST rate limit
+    results.rest_rate_limit = await probe_rest_rate_limit(rest)
+
+    # 4. E2E loop — deferred in demo. Demo market activity is too thin.
+    results.end_to_end_loop_ms = {
+        "status": "deferred",
+        "reason": "prod_paper_phase",
+        "note": (
+            "Demo market activity is too thin for a meaningful end-to-end "
+            "WS→REST loop measurement. Will be captured during the 48-hour "
+            "production paper-trading phase."
+        ),
+    }
+
+    # Stamp environment + notes on every measurement block.
+    _annotate(results, environment="demo" if cfg.kalshi_use_demo else "prod")
+
+    # Scrub any accidentally-leaked account identifiers before writing.
+    _scrub(results)
+
+    _write_results(results)
+
+    if cfg.auto_publish:
+        _publish(results)
+    else:
+        _log.info(
+            "probe.publish_skipped",
+            reason="AUTO_PUBLISH=false (dry run); review YAML before flipping the flag",
+        )
+
+    return results
+
+
+def _annotate(results: ProbeResults, *, environment: str) -> None:
+    """Tag every measurement block with environment + boilerplate notes."""
+    note = DEMO_NOTES if environment == "demo" else "Measured in production environment."
+    for block_name in (
+        "ws_subscription",
+        "rest_write_latency_ms",
+        "rest_rate_limit",
+        "end_to_end_loop_ms",
+    ):
+        block = getattr(results, block_name)
+        if isinstance(block, dict):
+            block["environment"] = environment
+            block.setdefault("notes", note)
+
+
+def _scrub(results: ProbeResults) -> None:
+    """Guardrail: strip any key/account/header material from the probe output.
+
+    The probe does not collect these on purpose; this is a belt-and-suspenders
+    check against future regressions. Any value matching redaction patterns
+    is replaced with '<redacted>' and a note added.
+    """
+    import re
+
+    patterns = [
+        re.compile(r"[A-Fa-f0-9]{24,}"),           # long hex IDs
+        re.compile(r"[A-Za-z0-9_-]{32,}"),          # long opaque tokens
+        re.compile(r"Bearer\s+\S+", re.IGNORECASE),
+        re.compile(r"KALSHI[-_]API[-_]KEY", re.IGNORECASE),
+    ]
+    redacted_any = False
+
+    def scrub_value(v: Any) -> Any:
+        nonlocal redacted_any
+        if isinstance(v, str):
+            for p in patterns:
+                if p.search(v):
+                    redacted_any = True
+                    return "<redacted>"
+            return v
+        if isinstance(v, dict):
+            return {k: scrub_value(vv) for k, vv in v.items()}
+        if isinstance(v, list):
+            return [scrub_value(x) for x in v]
+        return v
+
+    for block_name in (
+        "ws_subscription",
+        "rest_write_latency_ms",
+        "rest_rate_limit",
+        "end_to_end_loop_ms",
+    ):
+        block = getattr(results, block_name)
+        if isinstance(block, dict):
+            setattr(results, block_name, scrub_value(block))
+    if redacted_any:
+        results.notes.append("Some values were redacted by the scrub guard.")
+
+
+def _write_results(results: ProbeResults) -> None:
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "ts_utc": results.ts_utc,
+        "environment": "demo" if results.demo_mode else "prod",
+        "auto_publish_was": False,  # overwritten by publish step if applicable
+        "ws_subscription": results.ws_subscription,
+        "rest_write_latency_ms": results.rest_write_latency_ms,
+        "rest_rate_limit": results.rest_rate_limit,
+        "end_to_end_loop_ms": results.end_to_end_loop_ms,
+        "notes": results.notes,
+    }
+    with RESULTS_PATH.open("w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+    _log.info("probe.results_written", path=str(RESULTS_PATH))
+
+
+def _publish(results: ProbeResults) -> None:
+    """Commit detected_limits.yaml to the auto-publish branch.
+
+    We use git directly because the kalshi-arb repo is sitting inside the
+    parent Kalshi repo (until the fresh repo is created). The auto-publish
+    branch isolates probe output from application code.
+    """
+    try:
+        subprocess.run(["git", "add", str(RESULTS_PATH)], check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"probe: detected_limits {results.ts_utc}"],
+            check=False,
+        )
+        branch = Config.load().auto_publish_branch
+        subprocess.run(["git", "push", "origin", f"HEAD:{branch}"], check=False)
+        _log.info("probe.published", branch=branch)
+    except subprocess.CalledProcessError as exc:
+        _log.warning("probe.publish_failed", error=str(exc))
+
+
+if __name__ == "__main__":
+    from .. import log as _lg
+
+    _lg.setup()
+    asyncio.run(run())
