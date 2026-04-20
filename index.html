@@ -151,7 +151,7 @@ setInterval(saveState,3000);
 let botConnected=false;
 async function pollBotState(){
   try{
-    const r=await fetch('/api/state');
+    const r=await fetch('http://localhost:5050/api/state');
     if(!r.ok)throw new Error(r.status);
     const s=await r.json();
     if(s.bot_running){

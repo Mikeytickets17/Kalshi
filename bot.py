@@ -22,11 +22,6 @@ from typing import Optional
 import config
 import shared_state
 from exchange import BinanceExecutor, TradeResult
-from flow_analyzer import FlowAnalyzer, ScalpDecision
-from alerts import AlertManager
-from edge_scanner import EdgeScanner, ArbOpportunity
-from ghpages_publisher import GHPagesPublisher
-from spread_reader import SpreadReader, SpreadOpportunity
 from kalshi_client import KalshiClient
 from market_scanner import MarketOpportunity, MarketScanner
 from news_analyzer import NewsAnalyzer, TradeAction
@@ -40,8 +35,17 @@ from risk_manager import RiskManager
 from signal_evaluator import EvaluationResult, SignalEvaluator
 from stock_trader import StockTrader
 from whale_tracker import WhaleTracker, WhaleSignal
+from edge_detector import EdgeDetector, MarketEdge
+from regime_detector import RegimeDetector
+from btc_trader import BTCTrader
 
 # --- Logging Setup ---
+
+# Fix Windows encoding crash: force UTF-8 on console output
+import io
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
@@ -49,16 +53,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(config.LOG_FILE, mode="a"),
+        logging.FileHandler(config.LOG_FILE, mode="a", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("bot")
-
-# Silence noisy libraries — only show errors, not every HTTP request
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 class LatencyArbBot:
@@ -97,24 +95,6 @@ class LatencyArbBot:
         # Components — Order Book + Flow Analysis
         self._orderbook = OrderBookReader()
 
-        # Components — BTC Scalp Strategy (flow-driven, primary signal)
-        self._flow_btc = FlowAnalyzer(asset="BTC")
-        self._flow_eth = FlowAnalyzer(asset="ETH")
-        self._scalp_positions: list[dict] = []
-        self._scalp_hold_seconds = 900  # 15 minutes max hold
-
-        # Components — Edge Strategies (arb, settlement sniper, bracket arb)
-        self._edge_scanner = EdgeScanner()
-
-        # Components — Dashboard publisher (pushes state to GitHub Pages)
-        self._publisher = GHPagesPublisher()
-
-        # Components — Polymarket-Coinbase spread reader
-        self._spread_reader = SpreadReader()
-
-        # Components — Multi-channel alerts (Apprise)
-        self._alerts = AlertManager()
-
         # Components — Universal News Trading (stocks, BTC, Kalshi)
         self._news_feed = NewsFeed()
         self._news_analyzer = NewsAnalyzer()
@@ -123,6 +103,15 @@ class LatencyArbBot:
 
         # Components — Whale Tracker (copy top Kalshi traders)
         self._whale_tracker = WhaleTracker(self._kalshi)
+
+        # Components — Edge Detector (find market loopholes)
+        self._edge_detector = EdgeDetector(self._kalshi)
+
+        # Components — Regime Detector (pick ONE direction, stop fighting yourself)
+        self._regime = RegimeDetector(window_hours=4.0)
+
+        # Components — BTC 15-Minute Trader (Kalshi crypto contracts)
+        self._btc_trader = BTCTrader()
 
         # Initialize shared state — recover from previous session if possible
         prev_state = shared_state.load_from_disk()
@@ -163,41 +152,11 @@ class LatencyArbBot:
         )
 
         tasks = [
-            # Strategy 1: Latency Arbitrage
-            asyncio.create_task(self._price_feed.start(), name="price_feed"),
-            asyncio.create_task(self._scanner.start(), name="scanner"),
-            asyncio.create_task(self._signal_processor(), name="signal_processor"),
-            asyncio.create_task(self._exit_monitor(), name="exit_monitor"),
-            # Strategy 2: Trump News Trading
-            asyncio.create_task(self._trump_monitor.start(), name="trump_monitor"),
-            asyncio.create_task(self._trump_news_processor(), name="trump_processor"),
-            asyncio.create_task(self._trump_exit_monitor(), name="trump_exits"),
-            # Order Book + Flow Analysis
-            asyncio.create_task(self._orderbook.start(), name="orderbook"),
-            # Strategy 6: BTC Scalp — flow-driven, primary signal, zero delay
-            asyncio.create_task(self._btc_flow_ingestion(), name="btc_flow_ingest"),
-            asyncio.create_task(self._btc_scalp_processor(), name="btc_scalp"),
-            asyncio.create_task(self._btc_scalp_exit_monitor(), name="btc_scalp_exits"),
-            # Strategy 7: Edge Strategies — arb, settlement sniper, bracket arb
-            asyncio.create_task(
-                self._edge_scanner.start(self._kalshi, self._price_feed, self._flow_btc.vol),
-                name="edge_scanner",
-            ),
-            asyncio.create_task(self._edge_processor(), name="edge_processor"),
-            # Polymarket-Coinbase spread reader
-            asyncio.create_task(self._spread_reader.start(), name="spread_reader"),
-            asyncio.create_task(self._spread_processor(), name="spread_processor"),
-            # Strategy 3: Universal News → Stocks + BTC + Kalshi
-            asyncio.create_task(self._news_feed.start(), name="news_feed"),
-            asyncio.create_task(self._news_processor(), name="news_processor"),
-            asyncio.create_task(self._news_exit_monitor(), name="news_exits"),
-            # Strategy 5: Whale Tracker (copy smart money on Kalshi)
-            asyncio.create_task(self._whale_tracker.start(), name="whale_tracker"),
-            asyncio.create_task(self._whale_copy_processor(), name="whale_copier"),
+            # ═══ BTC 15-MINUTE TRADER ONLY ═══
+            # All other strategies disabled until BTC is perfected
+            asyncio.create_task(self._btc_trader.start(), name="btc_15min"),
             # State persistence for dashboard
             asyncio.create_task(self._state_flusher(), name="state_flush"),
-            # Publish state to GitHub Pages dashboard
-            asyncio.create_task(self._publisher.start(), name="ghpages_publisher"),
             # Daily Telegram summary
             asyncio.create_task(self._daily_summary_scheduler(), name="daily_summary"),
         ]
@@ -216,93 +175,49 @@ class LatencyArbBot:
                     task.cancel()
 
     async def _state_flusher(self) -> None:
-        """Periodically flush shared state and update unrealized P&L."""
+        """Periodically flush shared state to disk for the dashboard."""
         while self._running:
             try:
-                # Update unrealized P&L for ALL position types
-                self._update_all_unrealized_pnl()
+                # Update unrealized P&L for all active positions
+                for market_id, pos in self._active_positions.items():
+                    cex = self._price_feed.get_price(pos.source_wallet) if hasattr(pos, 'source_wallet') else None
+                    if cex and cex.consensus_price > 0 and pos.avg_price > 0:
+                        if pos.side.value == "YES":
+                            upnl = (cex.consensus_price - pos.avg_price) * pos.size
+                        else:
+                            upnl = (pos.avg_price - cex.consensus_price) * pos.size
+                        shared_state.update_position_pnl(market_id, upnl)
+
+                # Update unrealized P&L for Trump positions
+                for tp in self._trump_positions:
+                    tid = tp.get("trade_id", "")
+                    if tid and tp.get("entry_price", 0) > 0:
+                        cex = self._price_feed.get_price(tp.get("asset", "BTC"))
+                        if cex and cex.consensus_price > 0:
+                            if tp["side"] in ("BUY", "LONG", "YES"):
+                                upnl = (cex.consensus_price - tp["entry_price"]) / tp["entry_price"] * tp["size_usd"]
+                            else:
+                                upnl = (tp["entry_price"] - cex.consensus_price) / tp["entry_price"] * tp["size_usd"]
+                            shared_state.update_position_pnl(tid, upnl)
+
+                # Update unrealized P&L for news positions
+                for np in self._news_positions:
+                    tid = np.get("trade_id", "")
+                    if tid and np.get("entry_price", 0) > 0:
+                        cex = self._price_feed.get_price(np.get("asset", "BTC"))
+                        if cex and cex.consensus_price > 0:
+                            if np["side"] in ("BUY", "LONG", "YES"):
+                                upnl = (cex.consensus_price - np["entry_price"]) / np["entry_price"] * np["size_usd"]
+                            else:
+                                upnl = (np["entry_price"] - cex.consensus_price) / np["entry_price"] * np["size_usd"]
+                            shared_state.update_position_pnl(tid, upnl)
+
                 shared_state.periodic_flush()
                 risk_summary = self._risk_manager.get_summary()
                 shared_state.update_risk(risk_summary)
             except Exception:
                 pass
             await asyncio.sleep(3)
-
-    def _update_all_unrealized_pnl(self) -> None:
-        """Update unrealized P&L for every active position using REAL prices."""
-        import math
-
-        # Get current BTC/ETH prices from real feed
-        btc_state = self._price_feed.get_price("BTC")
-        eth_state = self._price_feed.get_price("ETH")
-        btc_price = btc_state.consensus_price if btc_state else 0
-        eth_price = eth_state.consensus_price if eth_state else 0
-
-        # Get snapshot of all active positions from shared state
-        snapshot = shared_state.get_snapshot()
-        for pos in snapshot.get("active_positions", []):
-            pos_id = pos.get("id", "")
-            entry = pos.get("entry_price", 0)
-            size = pos.get("size_usd", 0)
-            side = pos.get("side", "")
-            asset = pos.get("asset", "").upper()
-            venue = pos.get("venue", "")
-            reason = pos.get("reason", "")
-
-            if entry <= 0 or size <= 0:
-                continue
-
-            unrealized = 0.0
-
-            # Determine which spot price to use
-            spot = 0
-            if "BTC" in asset or "BITCOIN" in asset:
-                spot = btc_price
-            elif "ETH" in asset or "ETHEREUM" in asset:
-                spot = eth_price
-
-            if spot <= 0:
-                shared_state.update_position_pnl(pos_id, 0.0)
-                continue
-
-            if entry < 10:
-                # Kalshi contract position (entry price 0-1)
-                # Parse strike from reason field: "CEX $68500 vs strike $68400"
-                strike = 0
-                if "strike" in reason:
-                    import re
-                    m = re.search(r'strike\s*\$?([\d,]+)', reason)
-                    if m:
-                        strike = float(m.group(1).replace(",", ""))
-
-                if strike > 0:
-                    # Calculate true probability using Black-Scholes
-                    distance_pct = (spot - strike) / strike
-                    # Rough estimate: further from strike = more certain
-                    estimated_price = max(0.05, min(0.95, 0.50 + distance_pct * 10))
-
-                    if side in ("YES", "BUY"):
-                        unrealized = (estimated_price - entry) * size
-                    else:
-                        unrealized = (entry - estimated_price) * size
-                else:
-                    # No strike found — estimate from spot price movement
-                    # Use 1% of spot move per 1% of contract value
-                    pct_move = (spot - (btc_price * 0.999 if "BTC" in asset else eth_price * 0.999)) / spot
-                    if side in ("YES", "BUY"):
-                        unrealized = size * pct_move * 5
-                    else:
-                        unrealized = size * (-pct_move) * 5
-
-            elif entry > 100:
-                # Spot BTC/ETH trade (entry price in dollars)
-                pct_change = (spot - entry) / entry
-                if side in ("BUY", "LONG", "YES"):
-                    unrealized = size * pct_change
-                else:
-                    unrealized = size * (-pct_change)
-
-            shared_state.update_position_pnl(pos_id, round(unrealized, 2))
 
     async def _daily_summary_scheduler(self) -> None:
         """Send daily Telegram summary at midnight UTC."""
@@ -493,13 +408,6 @@ class LatencyArbBot:
         while self._running:
             try:
                 for market_id, pos in list(self._active_positions.items()):
-                    # Update unrealized P&L on every check
-                    if pos.side == Side.YES:
-                        unrealized = (pos.current_price - pos.avg_price) * pos.size
-                    else:
-                        unrealized = (pos.avg_price - pos.current_price) * pos.size
-                    shared_state.update_position_pnl(market_id, unrealized)
-
                     should_exit, reason = self._check_exit(pos)
                     if should_exit:
                         await self._close_position(market_id, pos, reason)
@@ -510,44 +418,30 @@ class LatencyArbBot:
                 await asyncio.sleep(1)
 
     def _check_exit(self, position: Position) -> tuple[bool, str]:
-        # Paper mode: simulate resolution after random 5-15 min
-        if self._paper_mode:
-            age = time.time() - position.entry_time
-            if age > random.uniform(300, 900):
-                edge_factor = 1.0 - position.avg_price
-                win_prob = min(0.60 + edge_factor * 0.35, 0.95)
-                if random.random() < win_prob:
-                    if position.side == Side.YES:
-                        position.current_price = 0.99
-                    else:
-                        position.current_price = 0.99
-                else:
-                    if position.side == Side.YES:
-                        position.current_price = 0.01
-                    else:
-                        position.current_price = 0.01
-                return True, "Contract resolved"
-            return False, ""
+        age = time.time() - position.entry_time
 
-        # --- LIVE MODE ---
+        # Calculate current P&L
+        if position.side == Side.YES:
+            pnl = (position.current_price - position.avg_price) * position.size
+        else:
+            pnl = (position.avg_price - position.current_price) * position.size
 
-        # 1. Check if the Kalshi contract has settled
-        is_settled, result = self._kalshi.check_settlement(position.market_id)
-        if is_settled:
-            if result == "yes":
-                position.current_price = 0.99
-            elif result == "no":
-                position.current_price = 0.01
-            else:
-                position.current_price = 0.50
-            return True, f"Contract settled: {result}"
+        # Rule 1: TAKE PROFIT — exit when profit exceeds $50
+        if pnl >= 50:
+            return True, f"Take profit: ${pnl:.2f}"
 
-        # 2. Update position with live Kalshi price
-        live_price = self._kalshi.get_market_price(position.market_id)
-        if live_price is not None:
-            position.current_price = live_price
+        # Rule 2: STOP LOSS — exit when loss exceeds $15
+        if pnl <= -15:
+            return True, f"Stop loss: ${pnl:.2f}"
 
-        # 3. Check risk manager conditions (stop loss, drawdown, etc.)
+        # Rule 3: TIME EXIT — close after 60 minutes regardless
+        if age > 3600:
+            return True, f"Time exit: held {age/60:.0f}min, P&L ${pnl:.2f}"
+
+        # Rule 4: Otherwise HOLD — let the position breathe
+        return False, ""
+
+        # Live: check risk manager conditions
         should_exit, reason = self._risk_manager.check_exit_conditions(
             position, self._portfolio_value
         )
@@ -571,11 +465,6 @@ class LatencyArbBot:
         del self._active_positions[market_id]
 
         self._notifier.notify_trade_closed(position, pnl, reason)
-        self._alerts.alert_trade_closed(
-            strategy=position.category or "ARB",
-            asset=position.source_wallet or market_id,
-            pnl=pnl, result="WIN" if won else "LOSS",
-        )
 
         # Record to shared state for dashboard
         shared_state.record_trade_closed(
@@ -618,7 +507,75 @@ class LatencyArbBot:
                     text=post.text, source=post.source,
                 )
 
-                # Analyze sentiment with Claude (or rule-based fallback)
+                # FAST PATH: instant keyword detection for speed-critical trades
+                # This fires BEFORE the AI analysis for maximum speed
+                text_lower = post.text.lower()
+                fast_direction = None
+                fast_confidence = 0.0
+
+                # Bullish keywords — instant BUY
+                if any(kw in text_lower for kw in [
+                    "bitcoin reserve", "crypto capital", "strategic reserve",
+                    "rate cut", "cut rates", "ceasefire", "peace deal",
+                    "peace agreement", "trade deal", "deal signed",
+                    "crypto executive order", "bitcoin executive order",
+                    "etf approved", "etf approval",
+                ]):
+                    fast_direction = "BUY"
+                    fast_confidence = 0.80
+                    logger.info("FAST PATH: BULLISH keywords detected — trading in <100ms")
+
+                # Bearish keywords — instant SELL
+                elif any(kw in text_lower for kw in [
+                    "tariff", "tariffs", "trade war", "sanctions",
+                    "military strike", "troops deployed", "invasion",
+                    "nuclear", "bomb", "attack", "war ",
+                    "shutdown", "impeach", "fire the fed",
+                ]):
+                    fast_direction = "SELL"
+                    fast_confidence = 0.75
+                    logger.info("FAST PATH: BEARISH keywords detected — trading in <100ms")
+
+                # Feed Trump post into regime detector
+                self._regime.process_headline(post.text, post.source)
+
+                # Check regime before trading
+                if fast_direction:
+                    allowed, regime_reason = self._regime.should_take_trade(fast_direction)
+                    if not allowed:
+                        logger.info("REGIME BLOCKED TRUMP FAST: %s — %s", fast_direction, regime_reason)
+                        fast_direction = None
+
+                # Execute fast path trade immediately while AI analyzes
+                if fast_direction and self._available_balance > config.MIN_TRADE_SIZE_USDC:
+                    fast_size = min(self._portfolio_value * 0.04, config.TRUMP_MAX_TRADE_SIZE_USDC)
+                    if fast_size <= self._available_balance:
+                        if fast_direction == "BUY":
+                            result = self._exchange.buy("BTC", fast_size)
+                        else:
+                            result = self._exchange.sell("BTC", fast_size)
+                        if result.success:
+                            fast_tid = f"fast-trump-{int(time.time()*1000)}"
+                            self._trade_count += 1
+                            self._available_balance -= fast_size
+                            self._trump_positions.append({
+                                "entry_time": time.time(), "side": fast_direction,
+                                "asset": "BTC", "entry_price": result.filled_price,
+                                "size_usd": result.filled_usd, "qty": result.filled_qty,
+                                "hold_until": time.time() + config.TRUMP_HOLD_MINUTES * 60,
+                                "trade_id": fast_tid, "post_text": post.text[:100],
+                                "sentiment": fast_direction, "confidence": fast_confidence,
+                            })
+                            shared_state.record_trade_opened(
+                                trade_id=fast_tid, strategy="TRUMP", side=fast_direction,
+                                asset="BTC", venue="Binance", entry_price=result.filled_price,
+                                size_usd=fast_size, confidence=fast_confidence,
+                                reason=f"FAST PATH: {post.text[:60]}",
+                            )
+                            logger.info("FAST TRADE: %s BTC $%.2f in <100ms on keyword match",
+                                        fast_direction, fast_size)
+
+                # Now run full AI analysis (takes 1-3 seconds, but fast trade already placed)
                 sentiment = await self._sentiment.analyze(post)
 
                 # Alert: Trump post detected with sentiment
@@ -641,32 +598,32 @@ class LatencyArbBot:
                     )
                     continue
 
-                # WAIT for market reaction before committing
-                logger.info("Trump post detected — waiting 2s for order flow confirmation...")
-                await asyncio.sleep(2)
+                # EXECUTE IMMEDIATELY — no waiting, speed is everything
+                logger.info("Trump post detected — EXECUTING NOW")
 
-                # CHECK ORDER BOOK: is the market actually reacting?
-                btc_decision = self._orderbook.make_decision(
-                    "BTC", sentiment.direction, sentiment.confidence
-                )
-
-                if not btc_decision.should_trade:
-                    logger.info(
-                        "ORDER BOOK REJECTED Trump trade: %s",
-                        btc_decision.reason,
-                    )
-                    # Still try Kalshi contracts even if BTC flow doesn't confirm
-                    # (contracts react differently than spot)
+                # In paper mode: use sentiment direction directly (no simulated order book gate)
+                # In live mode: check real order book for confirmation
+                if self._paper_mode:
+                    trade_side = "BUY" if sentiment.direction == "BULLISH" else "SELL" if sentiment.direction == "BEARISH" else None
+                    trade_conf = sentiment.confidence
+                    if trade_side:
+                        logger.info("SENTIMENT CONFIRMED: %s BTC — %s (conf=%.2f)",
+                                    trade_side, sentiment.direction, sentiment.confidence)
                 else:
-                    logger.info(
-                        "ORDER BOOK CONFIRMED: %s BTC — %s",
-                        btc_decision.side, btc_decision.reason,
+                    btc_decision = self._orderbook.make_decision(
+                        "BTC", sentiment.direction, sentiment.confidence
                     )
+                    if not btc_decision.should_trade:
+                        logger.info("ORDER BOOK REJECTED: %s", btc_decision.reason)
+                    else:
+                        logger.info("ORDER BOOK CONFIRMED: %s BTC — %s",
+                                    btc_decision.side, btc_decision.reason)
+                    trade_side = btc_decision.side if btc_decision.should_trade else None
+                    trade_conf = btc_decision.confidence
 
-                # Calculate trade size — use book-confirmed direction
-                trade_side = btc_decision.side if btc_decision.should_trade else None
+                # Calculate trade size
                 size = min(
-                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * btc_decision.confidence,
+                    self._portfolio_value * config.TRUMP_TRADE_SIZE_PCT * (trade_conf if not self._paper_mode else sentiment.confidence),
                     config.TRUMP_MAX_TRADE_SIZE_USDC,
                 )
                 size = max(size, config.MIN_TRADE_SIZE_USDC)
@@ -675,29 +632,15 @@ class LatencyArbBot:
                     logger.warning("Insufficient balance for Trump trade ($%.2f)", size)
                     continue
 
-                # BLOCK contradictory trades — check existing BTC positions
-                existing_btc_side = None
-                for tp in self._trump_positions:
-                    if tp.get("asset") == "BTC":
-                        existing_btc_side = tp.get("side")
-                        break
-                for np in self._news_positions:
-                    if np.get("asset") == "BTC":
-                        existing_btc_side = np.get("side")
-                        break
-                if existing_btc_side and existing_btc_side != trade_side:
-                    logger.info("BLOCKED contradictory Trump trade: already %s BTC", existing_btc_side)
-                    trade_side = None  # Skip spot trade, still try Kalshi contracts below
-
-                # Execute on Binance ONLY if order book confirms and no conflict
+                # Execute on Binance ONLY if order book confirms
                 if trade_side == "BUY":
                     result = self._exchange.buy("BTC", size)
                 elif trade_side == "SELL":
                     result = self._exchange.sell("BTC", size)
                 else:
-                    result = None
+                    continue
 
-                if result and result.success:
+                if result.success:
                     self._trade_count += 1
                     self._available_balance -= size
                     self._trump_positions.append({
@@ -891,67 +834,99 @@ class LatencyArbBot:
                     news.priority.upper(), news.headline[:80], news.source,
                 )
 
-                # Analyze with Claude or rules
+                # Feed headline into regime detector
+                self._regime.process_headline(news.headline, news.source)
+                logger.info("REGIME: %s (conf=%.2f) — %s",
+                            self._regime.direction, self._regime.regime.confidence,
+                            self._regime.regime.reason[:60])
+
+                # FAST PATH for critical news — trade BEFORE AI analysis
+                headline_lower = news.headline.lower()
+                if news.priority == "critical":
+                    fast_news_side = None
+                    # PCE / inflation data — direction depends on above/below expectations
+                    if any(kw in headline_lower for kw in ["pce below", "pce comes in low", "pce cool", "pce drop", "pce fell", "pce decline", "inflation cool", "inflation ease", "inflation drop", "inflation below"]):
+                        fast_news_side = "BUY"  # low inflation = rate cuts = bullish
+                    elif any(kw in headline_lower for kw in ["pce above", "pce hot", "pce surge", "pce rise", "pce higher", "inflation hot", "inflation surge", "inflation rise", "inflation above", "inflation jump"]):
+                        fast_news_side = "SELL"  # high inflation = no rate cuts = bearish
+
+                    # General bullish signals
+                    elif any(kw in headline_lower for kw in ["rate cut", "cuts rate", "fed cut", "ceasefire", "peace deal", "etf approved", "bitcoin reserve", "jobs beat", "gdp beat", "gdp growth"]):
+                        fast_news_side = "BUY"
+
+                    # General bearish signals
+                    elif any(kw in headline_lower for kw in ["tariff", "trade war", "sanctions", "military strike", "invasion", "war ", "nuclear", "jobs miss", "recession", "gdp negative"]):
+                        fast_news_side = "SELL"
+
+                    # Check regime before fast news trade
+                    if fast_news_side:
+                        allowed, regime_reason = self._regime.should_take_trade(fast_news_side)
+                        if not allowed:
+                            logger.info("REGIME BLOCKED NEWS FAST: %s — %s", fast_news_side, regime_reason)
+                            fast_news_side = None
+
+                    if fast_news_side and self._available_balance > config.MIN_TRADE_SIZE_USDC:
+                        fast_size = min(self._portfolio_value * 0.04, 500)
+                        if fast_size <= self._available_balance:
+                            if fast_news_side == "BUY":
+                                result = self._exchange.buy("BTC", fast_size)
+                            else:
+                                result = self._exchange.sell("BTC", fast_size)
+                            if result.success:
+                                fast_ntid = f"fast-news-{int(time.time()*1000)}"
+                                self._trade_count += 1
+                                self._available_balance -= fast_size
+                                self._news_positions.append({
+                                    "entry_time": time.time(), "venue": "binance",
+                                    "asset": "BTC", "side": fast_news_side,
+                                    "size_usd": fast_size, "entry_price": result.filled_price,
+                                    "hold_until": time.time() + 3600,  # 60 min hold
+                                    "headline": news.headline[:80], "trade_id": fast_ntid,
+                                })
+                                shared_state.record_trade_opened(
+                                    trade_id=fast_ntid, strategy="NEWS", side=fast_news_side,
+                                    asset="BTC", venue="Binance", entry_price=result.filled_price,
+                                    size_usd=fast_size, confidence=0.80,
+                                    reason=f"FAST: {news.headline[:60]}",
+                                )
+                                logger.info("FAST NEWS TRADE: %s BTC $%.2f — %s", fast_news_side, fast_size, news.headline[:50])
+
+                # Full AI analysis (runs after fast trade is already placed)
                 actions = await self._news_analyzer.analyze(news)
                 if not actions:
-                    logger.debug("No tradeable actions from this headline")
+                    logger.debug("No additional actions from AI analysis")
                     continue
 
-                # WAIT 2 seconds for market to react before trading
-                logger.info("News detected — waiting 2s for market reaction...")
-                await asyncio.sleep(2)
+                # EXECUTE IMMEDIATELY — speed is the edge
+                logger.info("News analyzed — EXECUTING %d actions", len(actions))
 
-                # Execute each action — BTC and ETH ONLY, Kalshi contracts ONLY
+                # Execute each action
                 for action in actions:
                     if action.confidence < 0.50:
                         continue
 
-                    # BLOCK all stock trades — BTC and ETH only
-                    if action.asset not in ("BTC", "ETH"):
+                    # REGIME CHECK — don't trade against the macro direction
+                    allowed, regime_reason = self._regime.should_take_trade(action.side)
+                    if not allowed:
+                        logger.info("REGIME BLOCKED: %s %s — %s", action.side, action.asset, regime_reason)
                         continue
 
-                    # BLOCK Alpaca stock trades entirely
-                    if action.venue == "alpaca_stock":
-                        continue
-
-                    # BLOCK contradictory trades — check if we already have a position
-                    # in the opposite direction on the same asset
-                    existing_side = None
-                    for np in self._news_positions:
-                        if np.get("asset") == action.asset:
-                            existing_side = np.get("side")
-                            break
-                    for tp in self._trump_positions:
-                        if tp.get("asset") == action.asset:
-                            existing_side = tp.get("side")
-                            break
-                    if existing_side:
-                        # Already have a position — only add if SAME direction
-                        if existing_side != action.side:
-                            logger.info(
-                                "BLOCKED contradictory trade: already %s %s, skipping %s",
-                                existing_side, action.asset, action.side,
-                            )
-                            continue
-
-                    # CHECK ORDER BOOK + FLOW before every trade
-                    if action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
+                    # In live mode: check real order book before trading
+                    # In paper mode: trade on AI confidence directly (no simulated gate)
+                    if not self._paper_mode and action.venue in ("binance_spot", "binance_futures") and action.asset in ("BTC", "ETH"):
                         decision = self._orderbook.make_decision(
                             action.asset, action.side, action.confidence
                         )
                         if not decision.should_trade:
-                            logger.info(
-                                "ORDER BOOK REJECTED: %s %s — %s",
-                                action.side, action.asset, decision.reason,
-                            )
+                            logger.info("ORDER BOOK REJECTED: %s %s — %s",
+                                        action.side, action.asset, decision.reason)
                             continue
-
-                        # Use book-adjusted confidence and size
                         action.confidence = decision.confidence
-                        logger.info(
-                            "ORDER BOOK CONFIRMED: %s %s — %s (conf=%.2f)",
-                            decision.side, action.asset, decision.reason, decision.confidence,
-                        )
+                        logger.info("ORDER BOOK CONFIRMED: %s %s — %s (conf=%.2f)",
+                                    decision.side, action.asset, decision.reason, decision.confidence)
+                    elif self._paper_mode:
+                        logger.info("SIGNAL ACCEPTED: %s %s — confidence %.2f (paper mode, real signal)",
+                                    action.side, action.asset, action.confidence)
 
                     size = min(
                         self._portfolio_value * action.size_pct * action.confidence,
@@ -968,12 +943,8 @@ class LatencyArbBot:
                 logger.error("News processor error: %s", exc, exc_info=True)
 
     async def _execute_news_action(self, action: TradeAction, size: float, news: NewsItem) -> bool:
-        """Execute a single trade action — BTC/ETH on Kalshi and Binance ONLY."""
+        """Execute a single trade action on the appropriate venue."""
         try:
-            # Block all non-BTC/ETH trades
-            if action.asset not in ("BTC", "ETH"):
-                return False
-
             if action.venue == "binance_spot":
                 if action.side in ("BUY", "LONG"):
                     result = self._exchange.buy(action.asset, size)
@@ -1012,8 +983,41 @@ class LatencyArbBot:
                     return True
 
             elif action.venue == "alpaca_stock":
-                # DISABLED — BTC and ETH Kalshi contracts only, no stock trades
-                return False
+                if action.side in ("BUY", "LONG"):
+                    result = self._stock_trader.buy(action.asset, size)
+                else:
+                    result = self._stock_trader.sell(action.asset, size)
+                if result.success:
+                    stock_tid = f"news-alp-{int(time.time()*1000)}"
+                    self._trade_count += 1
+                    self._news_positions.append({
+                        "entry_time": time.time(),
+                        "venue": "alpaca",
+                        "asset": action.asset,
+                        "side": action.side,
+                        "size_usd": size,
+                        "entry_price": result.filled_price,
+                        "hold_until": time.time() + action.hold_minutes * 60,
+                        "headline": news.headline[:80],
+                        "trade_id": stock_tid,
+                    })
+                    shared_state.record_trade_opened(
+                        trade_id=stock_tid, strategy="NEWS", side=action.side,
+                        asset=action.asset, venue="Alpaca",
+                        entry_price=result.filled_price, size_usd=size,
+                        confidence=action.confidence, reason=news.headline[:80],
+                    )
+                    shared_state.record_news(news.headline, news.source, news.priority, news.category)
+                    self._notifier.notify_news_trade(
+                        side=action.side, asset=action.asset, venue="Alpaca",
+                        size_usd=size, entry_price=result.filled_price,
+                        confidence=action.confidence, headline=news.headline,
+                    )
+                    logger.info(
+                        "STOCK TRADE: %s %s $%.2f on Alpaca (conf=%.2f, reason=%s)",
+                        action.side, action.asset, size, action.confidence, action.reasoning[:40],
+                    )
+                    return True
 
             elif action.venue == "kalshi_contract" and action.kalshi_keywords:
                 from contract_matcher import ContractMatch
@@ -1234,581 +1238,71 @@ class LatencyArbBot:
             except Exception as exc:
                 logger.error("Whale copy error: %s", exc, exc_info=True)
 
-    # --- Strategy 8: Polymarket-Coinbase Spread Trading ---
 
-    async def _spread_processor(self) -> None:
-        """Process Polymarket-Coinbase spread opportunities."""
-        logger.info("Spread processor started — reading Polymarket vs Coinbase")
+    # --- Strategy 6: Edge Detection (Market Loopholes) ---
+
+    async def _edge_scanner(self) -> None:
+        """Periodically scan for market inefficiencies and trade them."""
+        logger.info("Edge scanner started — hunting for market loopholes every 60s")
         while self._running:
             try:
-                try:
-                    opp = await asyncio.wait_for(
-                        self._spread_reader.opportunity_queue.get(), timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-
-                # Only trade BTC and ETH
-                if opp.asset not in ("BTC", "ETH"):
-                    continue
-
-                # Check for contradictory positions
-                existing_side = None
-                for pos in list(self._active_positions.values()):
-                    if opp.asset in pos.source_wallet:
-                        existing_side = pos.side.value
-                        break
-                if existing_side and existing_side != opp.direction:
-                    logger.info("SPREAD blocked: already %s %s", existing_side, opp.asset)
-                    continue
-
-                # Risk check
-                can_trade, risk_reason = self._risk_manager.check_can_trade(
-                    self._portfolio_value, self._active_positions,
-                    proposed_category="spread",
-                )
-                if not can_trade:
-                    continue
-
-                # Size based on spread magnitude
-                size = min(
-                    self._portfolio_value * 0.03 * (opp.spread / 0.05),
-                    config.MAX_TRADE_SIZE_USDC,
-                    self._available_balance * 0.3,
-                )
-                if size < config.MIN_TRADE_SIZE_USDC:
-                    continue
-
-                # Execute on Kalshi (matching contract)
-                order = self._kalshi.place_order(
-                    ticker=opp.contract_id,
-                    side=opp.direction,
-                    size_usd=size,
-                    price=opp.poly_yes_price if opp.direction == "YES" else opp.poly_no_price,
-                )
-
-                if order.success:
-                    self._trade_count += 1
-                    self._available_balance -= size
-                    trade_id = f"spread-{int(time.time()*1000)}"
-
-                    shared_state.record_trade_opened(
-                        trade_id=trade_id, strategy="SPREAD",
-                        side=opp.direction, asset=opp.asset,
-                        venue="Kalshi", entry_price=order.filled_price or opp.poly_yes_price,
-                        size_usd=size, confidence=opp.spread,
-                        reason=f"Spread {opp.spread:.1%} | spot ${opp.spot_price:,.0f} vs strike ${opp.strike:,.0f}",
-                    )
-
-                    # Send alert
-                    self._alerts.alert_spread_detected(
-                        opp.asset, opp.spread, opp.direction,
-                        opp.spot_price, opp.strike, opp.question,
-                    )
+                edges = await self._edge_detector.scan_all()
+                for edge in edges:
+                    if edge.confidence < 0.60:
+                        continue
 
                     logger.info(
-                        "SPREAD TRADE: %s %s $%.2f spread=%.1f%% spot=$%.0f strike=$%.0f",
-                        opp.direction, opp.asset, size, opp.spread * 100,
-                        opp.spot_price, opp.strike,
+                        "EDGE FOUND: [%s] %s — %s side, %.1f%% expected profit (conf=%.2f)",
+                        edge.edge_type, edge.ticker, edge.side,
+                        edge.expected_profit_pct, edge.confidence,
                     )
 
-            except Exception as exc:
-                logger.error("Spread processor error: %s", exc, exc_info=True)
-
-    # --- Strategy 7: Edge Strategies — Arb, Settlement Sniper, Bracket Arb ---
-
-    async def _edge_processor(self) -> None:
-        """
-        Process arbitrage opportunities from the EdgeScanner.
-
-        Executes three types of edges:
-        1. Cross-venue arb: Buy opposing sides on Kalshi + Polymarket
-        2. Settlement snipe: Buy near-certain contracts before expiry
-        3. Bracket arb: Exploit mispriced bracket contracts
-        """
-        logger.info("Edge processor started — executing arb opportunities")
-        while self._running:
-            try:
-                try:
-                    opp = await asyncio.wait_for(
-                        self._edge_scanner.opportunity_queue.get(), timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-
-                # Risk check
-                can_trade, risk_reason = self._risk_manager.check_can_trade(
-                    self._portfolio_value, self._active_positions,
-                    proposed_category=f"edge_{opp.edge_type}",
-                )
-                if not can_trade:
-                    logger.debug("Edge risk blocked: %s", risk_reason)
-                    continue
-
-                # Size: scale by profit and confidence
-                size = min(
-                    opp.max_size_usd,
-                    self._portfolio_value * 0.05 * opp.confidence,
-                    self._available_balance * 0.5,
-                )
-                if size < config.MIN_TRADE_SIZE_USDC:
-                    continue
-
-                # Execute based on edge type
-                if opp.edge_type == "settlement_snipe":
-                    await self._execute_settlement_snipe(opp, size)
-                elif opp.edge_type == "cross_venue":
-                    await self._execute_cross_venue_arb(opp, size)
-                elif opp.edge_type == "bracket_arb":
-                    await self._execute_bracket_arb(opp, size)
-
-            except Exception as exc:
-                logger.error("Edge processor error: %s", exc, exc_info=True)
-
-    async def _execute_settlement_snipe(self, opp: ArbOpportunity, size: float) -> None:
-        """Buy the near-certain side of a near-expiry contract."""
-        order = self._kalshi.place_order(
-            ticker=opp.ticker,
-            side=opp.side,
-            size_usd=size,
-            price=opp.current_price,
-        )
-        if order.success:
-            self._trade_count += 1
-            self._available_balance -= size
-            trade_id = f"snipe-{int(time.time()*1000)}"
-
-            # Track as active position for exit monitoring
-            position = Position(
-                market_id=opp.ticker,
-                condition_id=opp.ticker,
-                side=Side.YES if opp.side == "YES" else Side.NO,
-                size=order.filled_size or size,
-                avg_price=order.filled_price or opp.current_price,
-                current_price=order.filled_price or opp.current_price,
-                source_wallet="settlement_snipe",
-                category="edge",
-            )
-            self._active_positions[opp.ticker] = position
-
-            shared_state.record_trade_opened(
-                trade_id=trade_id,
-                strategy="SNIPE",
-                side=opp.side,
-                asset=opp.ticker,
-                venue="Kalshi",
-                entry_price=order.filled_price or opp.current_price,
-                size_usd=size,
-                confidence=opp.confidence,
-                reason=opp.description[:80],
-            )
-            shared_state.record_signal(
-                strategy="SNIPE",
-                side=opp.side,
-                asset=f"BTC ${opp.spot_price:,.0f}",
-                venue="Kalshi",
-                confidence=opp.confidence,
-                reason=f"{opp.minutes_to_expiry:.0f}min left | fair={opp.fair_value:.0%} | mkt={opp.current_price:.0%}",
-                action="SNIPED",
-            )
-            logger.info(
-                "SETTLEMENT SNIPE: %s %s $%.2f @ %.2f (fair=%.2f, %0.fmin left, conf=%.0f%%)",
-                opp.side, opp.ticker, size, order.filled_price or opp.current_price,
-                opp.fair_value, opp.minutes_to_expiry, opp.confidence * 100,
-            )
-
-    async def _execute_cross_venue_arb(self, opp: ArbOpportunity, size: float) -> None:
-        """Execute both legs of a cross-venue arbitrage."""
-        # Leg 1: Kalshi
-        kalshi_order = self._kalshi.place_order(
-            ticker=opp.ticker_a,
-            side=opp.side_a,
-            size_usd=size,
-            price=opp.price_a,
-        )
-        if not kalshi_order.success:
-            logger.warning("Cross-venue arb Kalshi leg failed: %s", kalshi_order.error)
-            return
-
-        # Leg 2: Polymarket (would need Polymarket client)
-        # For now, log the opportunity — Polymarket execution requires separate setup
-        logger.info(
-            "CROSS-VENUE ARB: Kalshi %s %s @ %.2f FILLED — need Poly %s @ %.2f (profit=%.1f%%)",
-            opp.side_a, opp.ticker_a, opp.price_a,
-            opp.side_b, opp.price_b, opp.profit_pct * 100,
-        )
-
-        self._trade_count += 1
-        self._available_balance -= size
-
-        trade_id = f"arb-{int(time.time()*1000)}"
-        shared_state.record_trade_opened(
-            trade_id=trade_id,
-            strategy="ARB",
-            side=opp.side_a,
-            asset=opp.ticker_a,
-            venue="Kalshi+Poly",
-            entry_price=opp.combined_cost,
-            size_usd=size,
-            confidence=opp.confidence,
-            reason=opp.description[:80],
-        )
-        shared_state.record_signal(
-            strategy="ARB",
-            side=f"{opp.side_a}+{opp.side_b}",
-            asset="BTC",
-            venue="Kalshi+Polymarket",
-            confidence=opp.confidence,
-            reason=f"Combined cost ${opp.combined_cost:.3f} → ${1-opp.combined_cost:.3f} profit",
-            action="ARBED",
-        )
-
-    async def _execute_bracket_arb(self, opp: ArbOpportunity, size: float) -> None:
-        """Execute a bracket arbitrage (buy both YES + NO when sum < $1)."""
-        if opp.side == "BOTH":
-            # Buy YES
-            yes_order = self._kalshi.place_order(
-                ticker=opp.ticker, side="YES",
-                size_usd=size / 2, price=opp.current_price / 2,
-            )
-            # Buy NO
-            no_order = self._kalshi.place_order(
-                ticker=opp.ticker, side="NO",
-                size_usd=size / 2, price=(1.0 - opp.current_price / 2),
-            )
-            if yes_order.success and no_order.success:
-                self._trade_count += 2
-                self._available_balance -= size
-                logger.info(
-                    "BRACKET ARB: %s YES+NO for $%.3f (guaranteed $%.3f profit)",
-                    opp.ticker, opp.current_price, 1.0 - opp.current_price,
-                )
-                shared_state.record_signal(
-                    strategy="BRACKET",
-                    side="BOTH",
-                    asset=opp.ticker,
-                    venue="Kalshi",
-                    confidence=opp.confidence,
-                    reason=opp.description[:80],
-                    action="ARBED",
-                )
-
-    # --- Strategy 6: BTC Scalp — Order Flow Driven ---
-
-    async def _btc_flow_ingestion(self) -> None:
-        """
-        Stream Binance aggTrade data directly into the flow analyzer.
-
-        This runs independently of the price feed — it feeds every single
-        trade tick into the CVD, VWAP, absorption, and sweep detectors.
-        No delays, no batching. Real-time.
-        """
-        import websockets as ws
-
-        logger.info("BTC flow ingestion starting — streaming aggTrade from Binance")
-
-        if self._paper_mode:
-            # In paper mode, feed simulated ticks from the price feed
-            await self._btc_flow_paper()
-            return
-
-        url = f"{config.BINANCE_WS_URL}/btcusdt@aggTrade"
-        while self._running:
-            try:
-                async with ws.connect(url, ping_interval=20) as conn:
-                    logger.info("BTC aggTrade WebSocket connected — flow analyzer active")
-                    while self._running:
-                        import json
-                        msg = await asyncio.wait_for(conn.recv(), timeout=30)
-                        data = json.loads(msg)
-
-                        price = float(data["p"])
-                        qty = float(data["q"])
-                        # Binance: m=true means the buyer is the maker → taker SOLD
-                        side = "sell" if data.get("m", False) else "buy"
-                        ts = float(data["T"]) / 1000.0
-
-                        self._flow_btc.on_trade(price, qty, side, ts)
-
-            except asyncio.TimeoutError:
-                logger.warning("BTC aggTrade timeout, reconnecting...")
-            except Exception as exc:
-                logger.error("BTC aggTrade error: %s, reconnecting in 1s...", exc)
-                await asyncio.sleep(1)
-
-    async def _btc_flow_paper(self) -> None:
-        """Feed simulated flow data in paper mode using price feed ticks."""
-        import random
-        logger.info("[PAPER] BTC flow ingestion in simulation mode")
-        while self._running:
-            state = self._price_feed.get_price("BTC")
-            if state and state.consensus_price > 0:
-                price = state.consensus_price
-                qty = random.uniform(0.001, 0.3)
-                side = random.choice(["buy", "sell"])
-                # Add slight directional bias based on recent momentum
-                self._flow_btc.on_trade(price, qty, side, time.time())
-            await asyncio.sleep(0.05)  # ~20 ticks/sec simulated
-
-    async def _btc_scalp_processor(self) -> None:
-        """
-        BTC scalp strategy — uses flow analyzer as PRIMARY signal.
-
-        Runs every 200ms. No delays. No waiting for news.
-        Pure order flow → decision → execution.
-        """
-        logger.info("BTC Scalp processor started — flow-driven, zero delay")
-
-        # Wait for flow data to accumulate
-        await asyncio.sleep(10)
-
-        while self._running:
-            try:
-                # Get order book state
-                book = self._orderbook.get_book("BTC")
-                if not book or book.timestamp == 0:
-                    await asyncio.sleep(0.5)
-                    continue
-
-                # Check if we have an active scalp position
-                has_position = len(self._scalp_positions) > 0
-                position_side = ""
-                if has_position:
-                    position_side = self._scalp_positions[0].get("direction", "")
-
-                # Get scalp decision from flow analyzer — THIS IS THE SIGNAL
-                decision = self._flow_btc.get_scalp_decision(
-                    current_price=book.mid_price,
-                    best_bid=book.best_bid,
-                    best_ask=book.best_ask,
-                    book_pressure=book.book_pressure,
-                    has_position=has_position,
-                    position_side=position_side,
-                )
-
-                # Log signal to dashboard
-                if decision.signal and decision.signal.is_actionable:
-                    sig = decision.signal
+                    # Record to shared state
                     shared_state.record_signal(
-                        strategy="BTC15",
-                        side=sig.direction.upper(),
-                        asset=f"BTC ${book.mid_price:,.0f}",
-                        venue="Binance",
-                        confidence=sig.confidence,
-                        reason=(
-                            f"60s: {sig.price_momentum:+.3f}% | "
-                            f"CVD: {sig.cvd_slope:+.0f}/s | "
-                            f"abs: {sig.absorption_score:+.2f} | "
-                            f"sweep: {sig.sweep_score:+.2f} | "
-                            f"VWAP: {sig.vwap_distance_pct:+.3f}% | "
-                            f"vol: {sig.vol_regime}"
-                        ),
-                        action="SCANNING",
+                        strategy="EDGE", side=edge.side, asset=edge.ticker,
+                        venue="Kalshi", confidence=edge.confidence,
+                        reason=f"[{edge.edge_type}] {edge.description[:80]}",
+                        action="DETECTED",
                     )
 
-                # Act on the decision
-                if decision.action.startswith("enter_"):
-                    await self._execute_scalp_entry(decision, book.mid_price)
-                elif decision.action == "exit":
-                    await self._execute_scalp_exit(decision, book.mid_price)
+                    # Trade mispricing edges automatically (guaranteed profit)
+                    if edge.edge_type == "mispricing" and edge.expected_profit_pct >= 2.0:
+                        size = min(
+                            self._portfolio_value * edge.size_suggestion_pct,
+                            config.MAX_TRADE_SIZE_USDC,
+                        )
+                        if size >= config.MIN_TRADE_SIZE_USDC and size <= self._available_balance:
+                            order = self._kalshi.place_order(
+                                ticker=edge.ticker,
+                                side="YES" if edge.side != "SELL_BOTH" else "YES",
+                                size_usd=size,
+                                price=edge.current_price,
+                            )
+                            if order.success:
+                                trade_id = f"edge-{int(time.time()*1000)}"
+                                self._trade_count += 1
+                                self._available_balance -= size
+                                shared_state.record_trade_opened(
+                                    trade_id=trade_id, strategy="EDGE",
+                                    side=edge.side, asset=edge.ticker,
+                                    venue="Kalshi", entry_price=order.filled_price,
+                                    size_usd=size, confidence=edge.confidence,
+                                    reason=f"[{edge.edge_type}] {edge.description[:60]}",
+                                )
+                                logger.info(
+                                    "EDGE TRADE: %s %s $%.2f — %s (%.1f%% expected profit)",
+                                    edge.side, edge.ticker, size,
+                                    edge.edge_type, edge.expected_profit_pct,
+                                )
 
-                # Check every 200ms — fast enough for scalping
-                await asyncio.sleep(0.2)
-
-            except Exception as exc:
-                logger.error("BTC scalp processor error: %s", exc, exc_info=True)
-                await asyncio.sleep(1)
-
-    async def _execute_scalp_entry(self, decision: ScalpDecision, current_price: float) -> None:
-        """Execute a BTC scalp entry based on flow signal."""
-        # Risk check
-        can_trade, risk_reason = self._risk_manager.check_can_trade(
-            self._portfolio_value,
-            self._active_positions,
-            proposed_category="btc_scalp",
-        )
-        if not can_trade:
-            logger.debug("Scalp risk blocked: %s", risk_reason)
-            return
-
-        # Don't stack scalp positions
-        if len(self._scalp_positions) >= 1:
-            return
-
-        # Kelly-based sizing
-        signal_type = decision.signal.signal_type if decision.signal else "flow"
-        size = self._sizer.compute_scalp_size(
-            signal_type=signal_type,
-            confidence=decision.confidence,
-            size_fraction=decision.size_fraction,
-        )
-
-        if size < config.MIN_TRADE_SIZE_USDC or size > self._available_balance:
-            return
-
-        # Execute immediately — no delay
-        direction = "long" if "long" in decision.action else "short"
-        if direction == "long":
-            result = self._exchange.buy("BTC", size)
-        else:
-            result = self._exchange.sell("BTC", size)
-
-        if not result.success:
-            logger.error("Scalp entry failed: %s", result.error)
-            return
-
-        self._trade_count += 1
-        self._available_balance -= size
-
-        trade_id = f"scalp-btc-{int(time.time()*1000)}"
-        self._scalp_positions.append({
-            "trade_id": trade_id,
-            "entry_time": time.time(),
-            "direction": direction,
-            "entry_price": result.filled_price,
-            "size_usd": result.filled_usd,
-            "qty": result.filled_qty,
-            "stop_price": decision.stop_price,
-            "target_price": decision.target_price,
-            "signal_type": signal_type,
-            "hold_until": time.time() + self._scalp_hold_seconds,
-        })
-
-        shared_state.record_trade_opened(
-            trade_id=trade_id,
-            strategy="BTC15",
-            side=direction.upper(),
-            asset="BTC",
-            venue="Binance",
-            entry_price=result.filled_price,
-            size_usd=result.filled_usd,
-            confidence=decision.confidence,
-            reason=decision.reason[:80],
-        )
-        shared_state.record_signal(
-            strategy="BTC15",
-            side=direction.upper(),
-            asset=f"BTC ${result.filled_price:,.0f}",
-            venue="Binance",
-            confidence=decision.confidence,
-            reason=decision.reason[:80],
-            action="TRADED",
-        )
-
-        logger.info(
-            "SCALP ENTRY: %s BTC $%.2f @ $%.2f (stop=$%.2f, target=$%.2f, signal=%s, conf=%.2f)",
-            direction.upper(), result.filled_usd, result.filled_price,
-            decision.stop_price, decision.target_price,
-            signal_type, decision.confidence,
-        )
-
-    async def _execute_scalp_exit(self, decision: ScalpDecision, current_price: float) -> None:
-        """Exit a scalp position — flow reversed or stop/target hit."""
-        if not self._scalp_positions:
-            return
-
-        pos = self._scalp_positions[0]
-
-        # Execute exit
-        if pos["direction"] == "long":
-            result = self._exchange.sell("BTC", pos["size_usd"])
-        else:
-            result = self._exchange.buy("BTC", pos["size_usd"])
-
-        if not result.success:
-            logger.error("Scalp exit failed: %s", result.error)
-            return
-
-        # Calculate PnL
-        if pos["direction"] == "long":
-            pnl = (result.filled_price - pos["entry_price"]) * pos["qty"]
-        else:
-            pnl = (pos["entry_price"] - result.filled_price) * pos["qty"]
-
-        won = pnl > 0
-        if won:
-            self._win_count += 1
-        self._available_balance += pos["size_usd"] + pnl
-        self._portfolio_value += pnl
-        self._risk_manager.record_trade_result(pnl, source_wallet="btc_scalp")
-        self._sizer.record_result(pos["signal_type"], pnl, pos["size_usd"])
-
-        # Record outcome for signal evaluator
-        self._evaluator.record_outcome(won)
-
-        shared_state.record_trade_closed(
-            trade_id=pos["trade_id"],
-            pnl=pnl,
-            exit_price=result.filled_price,
-            reason=decision.reason[:60],
-        )
-        shared_state.update_portfolio(self._portfolio_value)
-
-        hold_secs = time.time() - pos["entry_time"]
-        logger.info(
-            "SCALP EXIT: %s BTC pnl=$%+.2f (entry=$%.2f exit=$%.2f held=%.0fs, reason=%s)",
-            "WIN" if won else "LOSS", pnl,
-            pos["entry_price"], result.filled_price,
-            hold_secs, decision.reason[:40],
-        )
-
-        self._scalp_positions.clear()
-
-    async def _btc_scalp_exit_monitor(self) -> None:
-        """Monitor scalp positions for stop loss, target, and time expiry."""
-        logger.info("BTC scalp exit monitor started (max hold=%ds)", self._scalp_hold_seconds)
-        while self._running:
-            try:
-                if not self._scalp_positions:
-                    await asyncio.sleep(0.5)
-                    continue
-
-                pos = self._scalp_positions[0]
-                state = self._price_feed.get_price("BTC")
-                if not state:
-                    await asyncio.sleep(0.5)
-                    continue
-
-                current_price = state.consensus_price
-                entry_price = pos["entry_price"]
-
-                # Calculate current PnL
-                if pos["direction"] == "long":
-                    unrealized_pnl_pct = (current_price - entry_price) / entry_price
-                else:
-                    unrealized_pnl_pct = (entry_price - current_price) / entry_price
-
-                exit_reason = None
-
-                # Check stop loss
-                if pos["direction"] == "long" and current_price <= pos["stop_price"]:
-                    exit_reason = f"Stop loss hit at ${current_price:,.0f}"
-                elif pos["direction"] == "short" and current_price >= pos["stop_price"]:
-                    exit_reason = f"Stop loss hit at ${current_price:,.0f}"
-
-                # Check target
-                elif pos["direction"] == "long" and current_price >= pos["target_price"]:
-                    exit_reason = f"Target hit at ${current_price:,.0f}"
-                elif pos["direction"] == "short" and current_price <= pos["target_price"]:
-                    exit_reason = f"Target hit at ${current_price:,.0f}"
-
-                # Check time expiry
-                elif time.time() >= pos["hold_until"]:
-                    exit_reason = f"15min hold expired (pnl={unrealized_pnl_pct:+.2%})"
-
-                if exit_reason:
-                    decision = ScalpDecision(
-                        action="exit", asset="BTC",
-                        confidence=1.0, size_fraction=0.0,
-                        reason=exit_reason,
-                    )
-                    await self._execute_scalp_exit(decision, current_price)
-
-                await asyncio.sleep(0.2)  # Check every 200ms
+                if edges:
+                    logger.info("Edge scan: found %d edges (top: %.1f%% profit)",
+                                len(edges), edges[0].expected_profit_pct if edges else 0)
 
             except Exception as exc:
-                logger.error("Scalp exit monitor error: %s", exc, exc_info=True)
-                await asyncio.sleep(1)
+                logger.error("Edge scanner error: %s", exc, exc_info=True)
+
+            await asyncio.sleep(60)  # Scan every 60 seconds
 
 
 async def main() -> None:
@@ -1821,13 +1315,14 @@ async def main() -> None:
         logger.info("Received shutdown signal")
         shutdown_event.set()
 
-    # Windows doesn't support add_signal_handler — use try/except
-    try:
+    # add_signal_handler works on Linux/Mac but NOT on Windows
+    import sys
+    if sys.platform != "win32":
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _signal_handler)
-    except NotImplementedError:
-        # Windows: Ctrl+C will raise KeyboardInterrupt instead
-        pass
+    else:
+        # Windows: use Ctrl+C the normal way
+        logger.info("Windows detected — use Ctrl+C to stop")
 
     bot_task = asyncio.create_task(bot.run())
     shutdown_task = asyncio.create_task(shutdown_event.wait())

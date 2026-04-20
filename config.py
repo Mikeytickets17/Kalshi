@@ -34,11 +34,11 @@ BINANCE_WS_URL: str = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443
 COINBASE_WS_URL: str = os.getenv("COINBASE_WS_URL", "wss://ws-feed.exchange.coinbase.com")
 
 # --- Trump Monitor ---
-TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECONDS", "3.0"))
+TRUMP_POLL_INTERVAL_SECONDS: float = float(os.getenv("TRUMP_POLL_INTERVAL_SECONDS", "0.5"))
 TRUMP_MIN_CONFIDENCE: float = float(os.getenv("TRUMP_MIN_CONFIDENCE", "0.45"))
 TRUMP_TRADE_SIZE_PCT: float = float(os.getenv("TRUMP_TRADE_SIZE_PCT", "0.06"))
 TRUMP_MAX_TRADE_SIZE_USDC: float = float(os.getenv("TRUMP_MAX_TRADE_SIZE_USDC", "750.0"))
-TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "20"))
+TRUMP_HOLD_MINUTES: int = int(os.getenv("TRUMP_HOLD_MINUTES", "60"))
 TRUMP_SCALE_BY_CONFIDENCE: bool = os.getenv("TRUMP_SCALE_BY_CONFIDENCE", "true").lower() == "true"
 
 # --- Twitter/X API ---
@@ -90,7 +90,7 @@ EXIT_TIME_BUFFER_SECONDS: int = int(os.getenv("EXIT_TIME_BUFFER_SECONDS", "30"))
 # --- Risk Management ---
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.20"))
 DRAWDOWN_KILL_SWITCH_PCT: float = float(os.getenv("DRAWDOWN_KILL_SWITCH_PCT", "0.40"))
-MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "5"))
+MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "50"))
 MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MAX_CATEGORY_EXPOSURE_PCT", "0.50"))
 CONSECUTIVE_LOSSES_KILL: int = int(os.getenv("CONSECUTIVE_LOSSES_KILL", "8"))
 WALLET_COOLDOWN_TRADES: int = int(os.getenv("WALLET_COOLDOWN_TRADES", "20"))

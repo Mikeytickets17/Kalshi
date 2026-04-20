@@ -92,10 +92,9 @@ class MarketScanner:
             config.TARGET_DURATIONS,
         )
 
-        if config.PAPER_MODE:
-            await self._run_paper_arb()
-        else:
-            await self._run_live_arb()
+        # Always try live arb first — uses real prices from Binance/Coinbase.
+        # Falls back to paper arb simulation only if no real price data available.
+        await self._run_live_arb()
 
     async def stop(self) -> None:
         self._running = False

@@ -120,28 +120,26 @@ class TrumpMonitor:
             self._poll_interval,
         )
 
-        if config.PAPER_MODE:
-            await self._run_paper_mode()
+        # ALWAYS poll real sources — even in paper mode.
+        # Paper mode only affects trade execution, not data collection.
+        tasks = [
+            asyncio.create_task(self._poll_truth_social(), name="truthsocial"),
+            asyncio.create_task(self._poll_rss(), name="rss"),
+            asyncio.create_task(self._poll_nitter(), name="nitter"),
+            asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
+        ]
+        # Add Twitter API pollers if bearer token is configured
+        if config.TWITTER_BEARER_TOKEN:
+            tasks.append(
+                asyncio.create_task(self._poll_twitter_api(), name="twitter_api"),
+            )
+            tasks.append(
+                asyncio.create_task(self._poll_twitter_search(), name="twitter_search"),
+            )
+            logger.info("Twitter/X API polling enabled")
         else:
-            # Run all sources concurrently for fastest detection
-            tasks = [
-                asyncio.create_task(self._poll_truth_social(), name="truthsocial"),
-                asyncio.create_task(self._poll_rss(), name="rss"),
-                asyncio.create_task(self._poll_nitter(), name="nitter"),
-                asyncio.create_task(self._poll_truth_atom(), name="truth_atom"),
-            ]
-            # Add Twitter API pollers if bearer token is configured
-            if config.TWITTER_BEARER_TOKEN:
-                tasks.append(
-                    asyncio.create_task(self._poll_twitter_api(), name="twitter_api"),
-                )
-                tasks.append(
-                    asyncio.create_task(self._poll_twitter_search(), name="twitter_search"),
-                )
-                logger.info("Twitter/X API polling enabled")
-            else:
-                logger.info("Twitter/X API polling disabled (no TWITTER_BEARER_TOKEN)")
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            logger.info("Twitter/X API polling disabled (no TWITTER_BEARER_TOKEN)")
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
         self._running = False
@@ -493,7 +491,7 @@ class TrumpMonitor:
 
         sample_posts = [
             # BTC bullish
-            "Bitcoin is the future of finance! The United States should be the crypto capital of the world! 🇺🇸",
+            "Bitcoin is the future of finance! The United States should be the crypto capital of the world!",
             "I am hereby ordering the establishment of a Strategic Bitcoin Reserve. America will be the crypto superpower!",
             "Crypto is BOOMING under my administration. We will NEVER let the Democrats destroy Bitcoin!",
             "Just met with the top Bitcoin miners. INCREDIBLE technology. Made in America!",
@@ -505,7 +503,7 @@ class TrumpMonitor:
             "Our country is being ripped off by every nation on earth. MASSIVE tariffs coming this week!",
             # Neutral / non-market
             "HAPPY EASTER to all, including the Radical Left Lunatics!",
-            "Just landed in Mar-a-Lago. Beautiful day in Florida! 🌴",
+            "Just landed in Mar-a-Lago. Beautiful day in Florida!",
             "Ratings for my speech last night were through the roof. RECORD NUMBERS!",
             "The Fake News Media is at it again. They never learn!",
         ]

@@ -149,9 +149,7 @@ class NewsFeed:
             tasks.append(asyncio.create_task(self._poll_brave_search(), name="brave_search"))
             logger.info("Brave Search enabled for real-time news")
 
-        if config.PAPER_MODE:
-            tasks.append(asyncio.create_task(self._run_paper_mode(), name="paper_news"))
-
+        # No fake paper news — real RSS feeds and Brave Search only
         await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
     async def stop(self) -> None:
@@ -313,7 +311,9 @@ class NewsFeed:
             "fomc", "interest rate", "fed cut", "fed hike",
             # Economic data
             " cpi ", "cpi report", "cpi comes", "cpi data",
-            "inflation data", "inflation rate",
+            " pce ", "pce data", "pce report", "pce index", "pce price",
+            "personal consumption", "core pce",
+            "inflation data", "inflation rate", "inflation report",
             "jobs report", "nonfarm payroll", "nonfarm payrolls",
             "gdp growth", "gdp report", "recession",
             "debt ceiling", "government shutdown",
