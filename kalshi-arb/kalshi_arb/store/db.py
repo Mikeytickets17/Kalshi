@@ -112,6 +112,16 @@ class EventStore:
             "store.closed", written=self._stats_written, dropped=self._stats_dropped
         )
 
+    async def flush(self) -> None:
+        """Block until every queued write has been drained to the backend.
+
+        Callers needing last_insert_rowid (e.g. the paper runner resolving
+        an opportunity_id after record_opportunity) must flush first so
+        the AUTOINCREMENT row is visible to the next read. Cheap when the
+        queue is short; O(queue depth) otherwise."""
+        if self._queue is not None:
+            await self._queue.join()
+
     def submit(self, job: WriteJob) -> None:
         """Non-blocking submit. Drops job with a WARN if the queue is full
         or the store hasn't been started yet (a test/caller misuse)."""
