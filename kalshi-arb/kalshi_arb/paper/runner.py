@@ -89,6 +89,18 @@ class PaperRunnerConfig:
     universe_min_volume_usd: float
     ws_max_tickers_per_conn: int
 
+    # Bypass the strict prod-probe gate on startup. The probe is
+    # defense-in-depth (calibrate rate-limit + WS cap + REST latency
+    # against live prod BEFORE paper trades fire). Paper mode itself
+    # uses PaperKalshiAPI (in-process, no real orders), so the probe
+    # is NOT a safety requirement for paper -- it's confidence that
+    # the live numbers match our assumptions. Skipping is appropriate
+    # when the probe has a code issue we haven't resolved yet, or
+    # when the operator wants to calibrate thresholds from actual
+    # paper-run observations. Skipping is NOT appropriate before
+    # going LIVE -- the live CLI (future) will re-enforce the gate.
+    skip_probe_gate: bool = False
+
     # Smoke-test mode: use FakeWSSource, a fixed universe, skip REST.
     smoke_test_seconds: int = 0
     smoke_test_rate_per_sec: float = 5.0
@@ -105,6 +117,7 @@ class PaperRunnerConfig:
         paper_cfg: PaperConfig,
         *,
         probe_path: Path,
+        skip_probe_gate: bool = False,
         smoke_test_seconds: int = 0,
         smoke_test_rate_per_sec: float = 5.0,
         smoke_test_seed: int = 42,
@@ -131,6 +144,7 @@ class PaperRunnerConfig:
             universe_categories=list(cfg.universe_categories),
             universe_min_volume_usd=cfg.universe_min_volume_usd,
             ws_max_tickers_per_conn=cfg.ws_max_tickers_per_conn,
+            skip_probe_gate=skip_probe_gate,
             smoke_test_seconds=smoke_test_seconds,
             smoke_test_rate_per_sec=smoke_test_rate_per_sec,
             smoke_test_seed=smoke_test_seed,
@@ -249,26 +263,39 @@ class PaperRunner:
 
         require_prod_probe(live_trading=False) doesn't raise on its own
         in paper mode, so we add the strict checks here. The operator's
-        spec is explicit: 'refuse to start if detected_limits.yaml
-        doesn't exist or environment != prod or ts_utc is older than 24h'.
+        original spec was explicit: refuse to start if detected_limits.yaml
+        doesn't exist or environment != prod or ts_utc is older than 24h.
+
+        Bypass: if self.config.skip_probe_gate is True, we SKIP the
+        gate entirely and emit a loud one-time banner on stderr so the
+        operator sees what they've done. Paper mode uses PaperKalshiAPI
+        (in-process fake); the probe was defense-in-depth for prod
+        calibration, not a functional safety requirement. The live CLI
+        (future) will not expose this flag.
         """
+        if self.config.skip_probe_gate:
+            self._emit_skip_probe_banner()
+            return
         snap = require_prod_probe(
             live_trading=False, path=self.config.probe_path
         )
         if snap.environment == "none" or not snap.ts_utc:
             raise GateError(
                 f"paper CLI refused: {self.config.probe_path} not found. "
-                f"Run the prod probe first: `kalshi-arb probe`."
+                f"Run the prod probe first: `kalshi-arb probe --env prod`, "
+                f"OR re-run with --skip-probe-gate to bypass (paper-only)."
             )
         if not snap.is_prod:
             raise GateError(
                 f"paper CLI refused: probe environment={snap.environment!r}, "
-                f"must be 'prod'. Re-run the probe against production."
+                f"must be 'prod'. Re-run the probe against production, "
+                f"OR pass --skip-probe-gate to bypass (paper-only)."
             )
         if not snap.is_fresh:
             raise GateError(
                 f"paper CLI refused: probe is {snap.age_hours:.1f}h old "
-                f"(max 24h). Re-run the prod probe."
+                f"(max 24h). Re-run the prod probe, "
+                f"OR pass --skip-probe-gate to bypass (paper-only)."
             )
         _log.info(
             "paper.gate.probe_ok",
@@ -276,6 +303,28 @@ class PaperRunner:
             age_hours=round(snap.age_hours, 2),
             ts_utc=snap.ts_utc,
         )
+
+    def _emit_skip_probe_banner(self) -> None:
+        """Loud one-time banner when --skip-probe-gate is set. The
+        operator must see clearly that defense-in-depth has been
+        disabled; on a live push this would be a hard refusal."""
+        banner = (
+            "\n"
+            + "=" * 70 + "\n"
+            + "  PAPER CLI: PROBE GATE BYPASSED (--skip-probe-gate)\n"
+            + "\n"
+            + "  You are running paper mode WITHOUT a fresh prod probe on\n"
+            + "  disk. This is SAFE for paper trading (PaperKalshiAPI is\n"
+            + "  in-process, no real orders) but means the sizer + scanner\n"
+            + "  thresholds have NOT been calibrated against prod numbers.\n"
+            + "\n"
+            + "  This flag does NOT exist on the live CLI. Before going\n"
+            + "  live, run: kalshi-arb probe --env prod\n"
+            + "=" * 70 + "\n"
+        )
+        sys.stderr.write(banner)
+        sys.stderr.flush()
+        _log.warning("paper.gate.probe_bypassed")
 
     async def _build_pipeline(self) -> None:
         """Connect the store, construct scanner/sizer/executor/api."""

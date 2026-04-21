@@ -196,6 +196,15 @@ def paper(
         "--probe-path",
         help="Path to the prod probe output. Must be fresh (<24h) and environment=prod.",
     ),
+    skip_probe_gate: bool = typer.Option(
+        False,
+        "--skip-probe-gate",
+        help=(
+            "Bypass the prod-probe gate. SAFE for paper mode (PaperKalshiAPI "
+            "is in-process; no real orders fire). NOT available on the live "
+            "CLI. Prints a loud banner so the operator sees the bypass is active."
+        ),
+    ),
 ) -> None:
     """Paper-mode pipeline: Kalshi WS -> scanner -> sizer -> PaperKalshiAPI -> event store.
 
@@ -220,6 +229,7 @@ def paper(
         cfg,
         paper_cfg,
         probe_path=probe_path,
+        skip_probe_gate=skip_probe_gate,
         smoke_test_seconds=smoke_test,
         smoke_test_rate_per_sec=smoke_rate,
         smoke_test_seed=smoke_seed,
