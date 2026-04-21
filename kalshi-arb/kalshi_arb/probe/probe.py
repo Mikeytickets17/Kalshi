@@ -57,6 +57,7 @@ from ..rest.client import RestClient, RestConfig
 from .analysis import (
     PROBE_COID_PREFIX,
     ProbeResults,
+    build_error_detail_lines,
     build_failed_detail_lines,
     build_summary_line,
     build_yaml_body,
@@ -374,12 +375,22 @@ class RealProbeTransport:
 
         Fires the same unfillable 1c BUY YES order as rest_write_latency
         so we don't leak capital if something goes wrong. Caps at 30
-        samples to bound exposure even in chatty markets."""
+        samples to bound exposure even in chatty markets.
+
+        Every fire-attempt is tracked in an ErrorCapture so the
+        per-group 'REST WRITE failures: Nx HTTP 403 ...' diagnostic
+        also applies to the e2e loop. Previously this probe just
+        _log.warning'd errors and dropped them on the floor, which
+        left the operator guessing when Kalshi rejected every
+        order-fire in a row."""
+        from ..common.errors import ErrorCapture
+
         _log.info("probe.e2e.start", ticker=ticker, wait_sec=wait_sec)
         latencies_ms: list[float] = []
         events_seen = 0
         orders_fired = 0
         unexpected_fills = 0
+        errors = ErrorCapture(max_unique=5)
 
         feed = self.rest.async_underlying().feed()
         start = time.monotonic()
@@ -418,6 +429,7 @@ class RealProbeTransport:
                     roundtrip_ms = (time.monotonic() - event_ts) * 1000
                     latencies_ms.append(roundtrip_ms)
                     orders_fired += 1
+                    errors.record_success()
                     order_id = getattr(resp, "order_id", None) or (
                         resp.get("order_id") if isinstance(resp, dict) else None
                     )
@@ -425,6 +437,9 @@ class RealProbeTransport:
                         resp.get("filled_count", 0) if isinstance(resp, dict) else 0
                     ))
                 except Exception as exc:  # noqa: BLE001
+                    errors.record(exc, context={
+                        "iter": events_seen, "ticker": ticker, "coid": coid,
+                    })
                     _log.warning("probe.e2e.fire_failed", error=str(exc))
                 finally:
                     if order_id:
@@ -456,6 +471,7 @@ class RealProbeTransport:
         result: dict[str, Any] = {
             "events_seen": events_seen,
             "orders_fired": orders_fired,
+            "errors_summary": errors.to_dict(),
         }
         if latencies_ms:
             latencies_ms.sort()
@@ -564,10 +580,21 @@ async def run(
             # shows every threshold that missed, not just the first.
             for line in build_failed_detail_lines(failures):
                 sys.stderr.write(line + "\n")
+            # Follow the threshold-miss lines with grouped Kalshi error
+            # responses for any block that captured write failures.
+            # This answers the operator's "WHY is Kalshi rejecting?"
+            # question without them having to read logs. Each group
+            # becomes its own FAILED DETAIL bullet in the popup:
+            #   REST WRITE 100x HTTP 403 "insufficient_buying_power: ..."
+            error_details = build_error_detail_lines(results)
+            for line in build_failed_detail_lines(error_details):
+                sys.stderr.write(line + "\n")
             sys.stderr.flush()
             raise ProbeFailure(
                 "prod probe thresholds not met:\n  - "
                 + "\n  - ".join(failures)
+                + ("\n\nKalshi error responses:\n  - "
+                   + "\n  - ".join(error_details) if error_details else "")
             )
 
     _scrub(results)
