@@ -126,6 +126,39 @@ What the prod probe does:
 If `AUTO_PUBLISH=true` in `.env`, results commit to `kalshi-arb-data`
 branch for remote review.
 
+## Run paper mode (the 48h session)
+
+Two paths, depending on whether the prod probe has produced a fresh
+`detected_limits.yaml`.
+
+### Fast path: bypass the probe gate (recommended for now)
+
+```
+double-click start_paper.bat
+```
+
+What this does:
+- Invokes `python -m kalshi_arb.cli paper --skip-probe-gate`
+- Prints a loud banner on stderr noting the bypass is active
+- Connects real Kalshi WS (read-only), PaperKalshiAPI (in-process,
+  NO real orders), and the event store the dashboard reads from
+- `Ctrl+C` in the window shuts down cleanly
+
+Why bypass: the prod probe places real 1c-limit orders to calibrate
+rate-limit + WS cap + REST latency against live prod. Paper mode
+uses PaperKalshiAPI (in-process fake orders) so the probe's numbers
+aren't a safety requirement -- they're confidence. The bypass flag
+is paper-only; the live CLI (future) will not expose it and will
+re-enforce the gate.
+
+### Strict path: gate-enforced (for production readiness)
+
+1. Run `verify_prod_probe.bat` and confirm it writes a fresh
+   `config/detected_limits.yaml` with `environment: prod`.
+2. Launch `kalshi-arb paper` (no `--skip-probe-gate`).
+3. The gate reads the yaml; refuses if it's missing, non-prod, or
+   > 24h old.
+
 ## Run the ingester (paper mode)
 
 ```bash
