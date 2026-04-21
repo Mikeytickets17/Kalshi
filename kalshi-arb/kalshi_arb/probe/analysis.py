@@ -231,6 +231,13 @@ def is_probe_coid(coid: str | None) -> bool:
 
 SUMMARY_PREFIX = "PROBE SUMMARY: "
 FAIL_DETAIL_PREFIX = "PROBE FAILED DETAIL: "
+# Informational prefix: errors observed during the run, regardless of
+# whether strict validation would reject them. Prod runs surface BOTH
+# FAIL_DETAIL (threshold misses) AND ERROR_DETAIL (grouped Kalshi
+# rejections). Demo runs surface ONLY ERROR_DETAIL because demo writes
+# the yaml regardless of numbers, but the operator still needs to see
+# that 100/100 REST writes were rejected and WHY.
+ERROR_DETAIL_PREFIX = "PROBE ERROR DETAIL: "
 
 
 def _fmt(v: Any, *, unit: str = "") -> str:

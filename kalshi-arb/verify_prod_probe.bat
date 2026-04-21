@@ -40,15 +40,19 @@ python -m kalshi_arb.cli probe --env prod > verify_prod_probe_output.txt 2>&1
 set EXITCODE=%ERRORLEVEL%
 
 REM Pull the structured diagnostic lines out of the transcript.
-REM   PROBE SUMMARY:         -> always present, shows every measured number
-REM   PROBE FAILED DETAIL:   -> one per missed threshold (only on FAIL)
-REM   PROBE PASSED / FAILED: -> headline banner
+REM   PROBE SUMMARY:          -> always present, shows every measured number
+REM   PROBE FAILED DETAIL:    -> one per missed threshold (only on FAIL)
+REM   PROBE ERROR DETAIL:     -> grouped Kalshi rejections (emitted in
+REM                              either env whenever writes fail)
+REM   PROBE PASSED / FAILED:  -> headline banner
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$txt = Get-Content -Raw verify_prod_probe_output.txt;" ^
   "$summary = (Select-String -Path verify_prod_probe_output.txt -Pattern '^PROBE SUMMARY:' | ForEach-Object { $_.Line } | Select-Object -Last 1);" ^
   "if (-not $summary) { $summary = '(no summary line emitted -- probe exited before measurement)' }" ^
   "$details = (Select-String -Path verify_prod_probe_output.txt -Pattern '^PROBE FAILED DETAIL:' | ForEach-Object { $_.Line });" ^
   "$details_text = if ($details) { ($details | Out-String).Trim() } else { '' };" ^
+  "$errors = (Select-String -Path verify_prod_probe_output.txt -Pattern '^PROBE ERROR DETAIL:' | ForEach-Object { $_.Line });" ^
+  "$errors_text = if ($errors) { ($errors | Out-String).Trim() } else { '' };" ^
   "$pass_line = (Select-String -Path verify_prod_probe_output.txt -Pattern '^PROBE PASSED' | ForEach-Object { $_.Line } | Select-Object -Last 1);" ^
   "$fail_line = (Select-String -Path verify_prod_probe_output.txt -Pattern '^PROBE FAILED \\(' | ForEach-Object { $_.Line } | Select-Object -Last 1);" ^
   "if (%EXITCODE% -eq 0) {" ^
@@ -62,6 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  $headline = if ($fail_line) { $fail_line } else { 'Probe did not complete cleanly.' };" ^
   "  $body = $headline + [Environment]::NewLine + [Environment]::NewLine + $summary;" ^
   "  if ($details_text) { $body = $body + [Environment]::NewLine + [Environment]::NewLine + 'Thresholds that failed:' + [Environment]::NewLine + $details_text }" ^
+  "  if ($errors_text) { $body = $body + [Environment]::NewLine + [Environment]::NewLine + 'Kalshi error responses:' + [Environment]::NewLine + $errors_text }" ^
   "  $body = $body + [Environment]::NewLine + [Environment]::NewLine + 'detected_limits.yaml was NOT written. Fix the specific threshold(s) above and re-run this .bat.' + [Environment]::NewLine + [Environment]::NewLine + '--- full transcript below ---' + [Environment]::NewLine + $txt;" ^
   "  $msg = $body;" ^
   "}" ^

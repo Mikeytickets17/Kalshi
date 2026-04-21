@@ -30,6 +30,7 @@ import pytest
 
 from kalshi_arb.common.errors import ErrorCapture
 from kalshi_arb.probe.analysis import (
+    ERROR_DETAIL_PREFIX,
     FAIL_DETAIL_PREFIX,
     ProbeResults,
     build_error_detail_lines,
@@ -358,22 +359,30 @@ def test_end_to_end_failure_surfaces_kalshi_error_bodies_to_stderr(tmp_path):
     # yaml must NOT be written (all-or-nothing invariant preserved).
     assert not out.exists()
 
-    details = [l for l in stderr.splitlines() if l.startswith(FAIL_DETAIL_PREFIX)]
-    joined = "\n".join(details)
+    # PROBE FAILED DETAIL carries threshold-miss reasons.
+    fail_details = [
+        l for l in stderr.splitlines() if l.startswith(FAIL_DETAIL_PREFIX)
+    ]
+    # PROBE ERROR DETAIL carries grouped Kalshi error responses.
+    # Distinct prefix so demo runs (which skip threshold validation)
+    # can still emit these without misleading the operator into
+    # thinking the run "failed" because of a gate.
+    error_details = [
+        l for l in stderr.splitlines() if l.startswith(ERROR_DETAIL_PREFIX)
+    ]
 
-    # Threshold-miss headers still land.
-    assert any("rest_write_latency_ms: success_rate=0.0%" in l for l in details)
-    assert any("end_to_end_loop_ms: samples=0" in l for l in details)
+    # Threshold-miss headers still land under FAIL_DETAIL.
+    assert any("rest_write_latency_ms: success_rate=0.0%" in l for l in fail_details)
+    assert any("end_to_end_loop_ms: samples=0" in l for l in fail_details)
 
-    # Grouped error headers tell the operator the failure ratio.
-    assert "REST WRITE FAILURES: 100/100 failed" in joined
-    assert "E2E LOOP FAILURES: 30/30 failed" in joined
-
-    # AND the actual Kalshi response body is in there, the operator's
-    # north-star deliverable: they can SEE why Kalshi rejected.
-    assert "REST WRITE 100x HTTP 403" in joined
-    assert "insufficient_buying_power: balance=$27, required=$0.50" in joined
-    assert "E2E LOOP 30x HTTP 403" in joined
+    # Grouped error headers move to ERROR_DETAIL so demo can surface
+    # the same diagnostic without implying a gate failed.
+    error_joined = "\n".join(error_details)
+    assert "REST WRITE FAILURES: 100/100 failed" in error_joined
+    assert "E2E LOOP FAILURES: 30/30 failed" in error_joined
+    assert "REST WRITE 100x HTTP 403" in error_joined
+    assert "insufficient_buying_power: balance=$27, required=$0.50" in error_joined
+    assert "E2E LOOP 30x HTTP 403" in error_joined
 
 
 def test_end_to_end_failure_with_multiple_error_groups_sorts_by_count(tmp_path):
@@ -419,7 +428,7 @@ def test_end_to_end_failure_with_multiple_error_groups_sorts_by_count(tmp_path):
 
     rest_lines = [
         l for l in stderr.splitlines()
-        if l.startswith(FAIL_DETAIL_PREFIX) and "REST WRITE " in l
+        if l.startswith(ERROR_DETAIL_PREFIX) and "REST WRITE " in l
         and "FAILURES" not in l   # skip the header line
     ]
     # Both groups present; tie-broken stably so both orderings allowed

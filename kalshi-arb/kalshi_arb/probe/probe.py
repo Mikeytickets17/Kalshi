@@ -55,6 +55,7 @@ from .. import clock, log
 from ..config import CATEGORY_PREFIXES, Config
 from ..rest.client import RestClient, RestConfig
 from .analysis import (
+    ERROR_DETAIL_PREFIX,
     PROBE_COID_PREFIX,
     ProbeResults,
     build_error_detail_lines,
@@ -90,6 +91,14 @@ class ProbeFailure(RuntimeError):
     Callers MUST NOT write detected_limits.yaml when this is raised --
     partial results are worse than no results (paper CLI's startup gate
     would accept a broken probe file)."""
+
+
+def _ioc() -> Any:
+    """Return pykalshi's TimeInForce.IOC. Lazy import so tests + CI
+    environments without pykalshi can still import this module."""
+    from pykalshi.enums import TimeInForce
+
+    return TimeInForce.IOC
 
 
 # ---------------------------------------------------------------------
@@ -220,7 +229,18 @@ class RealProbeTransport:
         self, ticker: str, samples: int, *, coid_tag: str
     ) -> dict[str, Any]:
         """Fire unfillable 1c BUY YES orders, measure placement round-trip,
-        cancel every order. Unexpected fill -> CRITICAL + raise."""
+        cancel every order. Unexpected fill -> CRITICAL + raise.
+
+        Uses pykalshi's canonical API surface:
+          * client.portfolio.place_order(...) -- not the long-assumed
+            (and non-existent) client.create_order(...)
+          * count_fp: fixed-point decimal string (e.g. "1")
+          * yes_price_dollars: dollar string (e.g. "0.01") -- pykalshi
+            does NOT accept integer-cent inputs
+          * time_in_force: IOC so a miss auto-cancels, but we still
+            call portfolio.cancel_order() in finally for belt-and-
+            suspenders against any resting state.
+        """
         from ..common.errors import ErrorCapture
 
         _log.info("probe.rest_write.start", samples=samples, ticker=ticker)
@@ -235,14 +255,14 @@ class RealProbeTransport:
             filled = 0
             try:
                 resp = await asyncio.to_thread(
-                    self.rest.underlying.create_order,
+                    self.rest.underlying.portfolio.place_order,
                     ticker=ticker,
                     action="buy",
                     side="yes",
-                    type="limit",
-                    count=1,
-                    yes_price=1,
+                    count_fp="1",
+                    yes_price_dollars="0.01",
                     client_order_id=coid,
+                    time_in_force=_ioc(),
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
                 latencies_ms.append(latency_ms)
@@ -261,7 +281,7 @@ class RealProbeTransport:
                 if order_id:
                     try:
                         await asyncio.to_thread(
-                            self.rest.underlying.cancel_order,
+                            self.rest.underlying.portfolio.cancel_order,
                             order_id=order_id,
                         )
                     except Exception:  # noqa: BLE001, S110
@@ -417,14 +437,14 @@ class RealProbeTransport:
                 filled = 0
                 try:
                     resp = await asyncio.to_thread(
-                        self.rest.underlying.create_order,
+                        self.rest.underlying.portfolio.place_order,
                         ticker=ticker,
                         action="buy",
                         side="yes",
-                        type="limit",
-                        count=1,
-                        yes_price=1,
+                        count_fp="1",
+                        yes_price_dollars="0.01",
                         client_order_id=coid,
+                        time_in_force=_ioc(),
                     )
                     roundtrip_ms = (time.monotonic() - event_ts) * 1000
                     latencies_ms.append(roundtrip_ms)
@@ -445,7 +465,7 @@ class RealProbeTransport:
                     if order_id:
                         try:
                             await asyncio.to_thread(
-                                self.rest.underlying.cancel_order,
+                                self.rest.underlying.portfolio.cancel_order,
                                 order_id=order_id,
                             )
                         except Exception:  # noqa: BLE001, S110
@@ -569,25 +589,29 @@ async def run(
     # the operator sees every measured number at a glance.
     _emit_summary_line(results)
 
+    # ALWAYS emit grouped Kalshi error responses for any probe block
+    # that captured write failures, regardless of env. Demo runs skip
+    # strict threshold validation (demo yamls are informational), but
+    # the operator still needs to see 'REST WRITE 100x HTTP 403 ...'
+    # in the console when 100/100 writes fail. Previously these lines
+    # only landed on prod+failure, which hid the root cause when the
+    # same rejection pattern surfaced on demo.
+    error_details = build_error_detail_lines(results)
+    for reason in error_details:
+        sys.stderr.write(ERROR_DETAIL_PREFIX + reason + "\n")
+    if error_details:
+        sys.stderr.flush()
+
     # Strict acceptance in prod only. Demo yamls are informational and
     # get written as-is.
     if env == "prod":
         failures = validate_prod_results(results)
         if failures:
-            # Emit each specific failure reason as its own stderr line
-            # with a stable `PROBE FAILED DETAIL: ` prefix. The .bat
-            # Select-Strings every matching line so the popup headline
-            # shows every threshold that missed, not just the first.
+            # Threshold-miss lines use the stable PROBE FAILED DETAIL
+            # prefix the .bat already grep's for. ERROR_DETAIL lines
+            # above cover 'why Kalshi rejected'; FAIL_DETAIL covers
+            # 'which gate blocked the run'. Two prefixes, two concerns.
             for line in build_failed_detail_lines(failures):
-                sys.stderr.write(line + "\n")
-            # Follow the threshold-miss lines with grouped Kalshi error
-            # responses for any block that captured write failures.
-            # This answers the operator's "WHY is Kalshi rejecting?"
-            # question without them having to read logs. Each group
-            # becomes its own FAILED DETAIL bullet in the popup:
-            #   REST WRITE 100x HTTP 403 "insufficient_buying_power: ..."
-            error_details = build_error_detail_lines(results)
-            for line in build_failed_detail_lines(error_details):
                 sys.stderr.write(line + "\n")
             sys.stderr.flush()
             raise ProbeFailure(
