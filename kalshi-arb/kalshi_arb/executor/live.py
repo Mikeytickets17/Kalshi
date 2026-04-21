@@ -49,20 +49,37 @@ class LiveKalshiAPI:
 
     async def place_order(self, req: OrderRequest) -> OrderResponse:
         try:
-            # pykalshi's create_order accepts keyword args mapping directly.
+            # pykalshi's real order API is client.portfolio.place_order,
+            # NOT client.create_order. Args:
+            #   * count_fp: fixed-point decimal STRING ("10", not 10)
+            #   * yes_price_dollars / no_price_dollars: dollar STRING
+            #     ("0.42", not 42). We translate from our internal
+            #     integer-cent representation here.
+            #   * time_in_force: pykalshi's TimeInForce enum; map "IOC"
+            #     -> TimeInForce.IOC and leave other strings raw so the
+            #     SDK can validate.
+            from pykalshi.enums import TimeInForce
+
+            tif_map = {
+                "IOC": TimeInForce.IOC,
+                "GTC": TimeInForce.GTC,
+                "FOK": TimeInForce.FOK,
+            }
             kwargs = {
                 "ticker": req.market_ticker,
                 "action": req.action,
                 "side": req.side,
-                "type": req.order_type,
-                "count": req.count,
+                "count_fp": str(req.count),
                 "client_order_id": req.client_order_id,
-                "time_in_force": req.time_in_force,
+                "time_in_force": tif_map.get(req.time_in_force, req.time_in_force),
             }
             if req.order_type == "limit":
-                price_key = "yes_price" if req.side == "yes" else "no_price"
-                kwargs[price_key] = req.limit_cents
-            resp = await self._client.create_order(**kwargs)
+                price_str = f"{req.limit_cents / 100:.2f}"
+                if req.side == "yes":
+                    kwargs["yes_price_dollars"] = price_str
+                else:
+                    kwargs["no_price_dollars"] = price_str
+            resp = await self._client.portfolio.place_order(**kwargs)
         except Exception as exc:  # noqa: BLE001
             return OrderResponse(
                 kalshi_order_id=None,
@@ -98,7 +115,7 @@ class LiveKalshiAPI:
 
     async def cancel_order(self, kalshi_order_id: str) -> None:
         try:
-            await self._client.cancel_order(order_id=kalshi_order_id)
+            await self._client.portfolio.cancel_order(order_id=kalshi_order_id)
         except Exception as exc:  # noqa: BLE001
             _log.warning("live_api.cancel_failed", order_id=kalshi_order_id, error=str(exc))
 
