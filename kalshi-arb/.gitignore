@@ -25,3 +25,4 @@ config/detected_limits.yaml
 dashboard_url.txt
 bin/cloudflared
 bin/cloudflared.exe
+audit-report.json
