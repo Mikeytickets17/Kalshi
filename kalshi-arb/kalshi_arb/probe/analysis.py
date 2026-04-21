@@ -10,7 +10,120 @@ from __future__ import annotations
 import json
 import statistics
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+
+# ---------------------------------------------------------------------
+# pykalshi Order-response field extraction
+#
+# The real pykalshi Order model exposes:
+#   fill_count_fp          : str | None  -- fixed-point decimal count
+#   taker_fill_cost_dollars: str | None  -- dollar string (e.g. '0.42')
+#   taker_fees_dollars     : str | None  -- dollar string
+#   maker_fees_dollars     : str | None
+#
+# Pre-audit code read `.filled_count` / `.avg_fill_price_cents` /
+# `.fees_cents` -- NONE of which exist on pykalshi. That meant any
+# actual fill (in the extreme case a 1c BUY did fill against a stale
+# offer) would have been reported as filled=0 and the CRITICAL
+# unfillable-fill guard would never have triggered. These helpers
+# extract the right fields and translate fixed-point strings to the
+# integer-cent representation the executor + event store expect.
+# ---------------------------------------------------------------------
+
+
+def _resp_attr(resp: Any, name: str, default: Any = None) -> Any:
+    """Pull `name` off either an object (real pykalshi Order) or a dict
+    (test fake). Real Order.__getattr__ delegates to OrderModel fields."""
+    if resp is None:
+        return default
+    if isinstance(resp, dict):
+        return resp.get(name, default)
+    return getattr(resp, name, default)
+
+
+def fill_count_from_response(resp: Any) -> int:
+    """Integer contract count filled by a pykalshi Order response.
+
+    Reads `fill_count_fp` (the real pykalshi field) first and falls
+    back to `filled_count` (the shape our own test fakes + older code
+    produced). Returns 0 for None, empty string, non-numeric, or any
+    parsing failure so the unfillable-fill guard is conservative:
+    when we can't parse, we assume 'did not fill' rather than 'did
+    fill' (the opposite would stop the probe prematurely)."""
+    fp = _resp_attr(resp, "fill_count_fp")
+    if fp is not None and fp != "":
+        try:
+            return int(Decimal(str(fp)))
+        except (InvalidOperation, ValueError, TypeError):
+            return 0
+    # Legacy / test shape: plain int field.
+    legacy = _resp_attr(resp, "filled_count", 0)
+    try:
+        return int(legacy or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def fill_price_cents_from_response(resp: Any) -> int:
+    """Average fill price in integer cents. pykalshi exposes
+    `taker_fill_cost_dollars` as a dollar string ('0.42'); we translate
+    to int cents. Falls back to the legacy `avg_fill_price_cents` int
+    field. Returns 0 when unparseable so the executor's accounting
+    degrades gracefully rather than crashing."""
+    raw = _resp_attr(resp, "taker_fill_cost_dollars")
+    if raw is not None and raw != "":
+        try:
+            # Dollar string -> Decimal -> rounded to nearest cent.
+            return int((Decimal(str(raw)) * 100).quantize(Decimal("1")))
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+    legacy = _resp_attr(resp, "avg_fill_price_cents", 0)
+    try:
+        return int(legacy or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def fees_cents_from_response(resp: Any) -> int:
+    """Sum of taker + maker fees in integer cents. pykalshi reports
+    each leg as a dollar string; we sum the two. Falls back to the
+    legacy `fees_cents` int field. Returns 0 on parsing failure."""
+    total = Decimal("0")
+    saw_any = False
+    for name in ("taker_fees_dollars", "maker_fees_dollars"):
+        raw = _resp_attr(resp, name)
+        if raw is None or raw == "":
+            continue
+        try:
+            total += Decimal(str(raw))
+            saw_any = True
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+    if saw_any:
+        try:
+            return int((total * 100).quantize(Decimal("1")))
+        except (InvalidOperation, ValueError, TypeError):
+            return 0
+    legacy = _resp_attr(resp, "fees_cents", 0)
+    try:
+        return int(legacy or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def order_id_from_response(resp: Any) -> str | None:
+    """kalshi_order_id from a pykalshi Order (or dict). Returns None if
+    the field is missing / empty -- caller must handle that case
+    because place_order can return an Order with order_id on success
+    but the cancel path needs the string."""
+    oid = _resp_attr(resp, "order_id")
+    if oid is None or oid == "":
+        # pykalshi Order delegates via __getattr__; dict fakes might
+        # use "kalshi_order_id" literally.
+        oid = _resp_attr(resp, "kalshi_order_id")
+    return str(oid) if oid else None
 
 
 # ---------------------------------------------------------------------

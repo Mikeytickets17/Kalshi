@@ -13,9 +13,16 @@ by accident.
 from __future__ import annotations
 
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .. import clock, log
+from ..probe.analysis import (
+    fees_cents_from_response,
+    fill_count_from_response,
+    fill_price_cents_from_response,
+    order_id_from_response,
+)
 from .kalshi_api import OrderRequest, OrderResponse, PortfolioSnapshot
 
 _log = log.get("executor.live")
@@ -91,25 +98,19 @@ class LiveKalshiAPI:
                 error=str(exc)[:300],
             )
 
-        order_id = getattr(resp, "order_id", None) or (
-            resp.get("order_id") if isinstance(resp, dict) else None
-        )
-        filled = int(getattr(resp, "filled_count", 0) or (
-            resp.get("filled_count", 0) if isinstance(resp, dict) else 0
-        ))
-        avg_price = int(getattr(resp, "avg_fill_price_cents", 0) or (
-            resp.get("avg_fill_price", 0) if isinstance(resp, dict) else 0
-        ))
-        fees = int(getattr(resp, "fees_cents", 0) or (
-            resp.get("fees", 0) if isinstance(resp, dict) else 0
-        ))
+        # pykalshi Order field shape:
+        #   fill_count_fp          (str, fixed-point)  -> int contracts
+        #   taker_fill_cost_dollars(str, '0.42')       -> int cents
+        #   taker_fees_dollars     (str)               -> summed int cents
+        # Helpers live in probe/analysis.py so probe + live API share
+        # one canonical extractor.
         return OrderResponse(
-            kalshi_order_id=order_id,
+            kalshi_order_id=order_id_from_response(resp),
             client_order_id=req.client_order_id,
-            filled_count=filled,
+            filled_count=fill_count_from_response(resp),
             requested_count=req.count,
-            avg_fill_price_cents=avg_price,
-            fees_cents=fees,
+            avg_fill_price_cents=fill_price_cents_from_response(resp),
+            fees_cents=fees_cents_from_response(resp),
             error=None,
         )
 
@@ -125,7 +126,13 @@ class LiveKalshiAPI:
             positions_raw = await self._client.portfolio.get_positions()
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"portfolio read failed: {exc}") from exc
-        cash = int(getattr(bal, "balance_cents", 0) or (
+        # BalanceModel.balance is already int cents (confirmed via
+        # /usr/local/lib/.../pykalshi/models.py::BalanceModel). The
+        # pre-audit code looked for `.balance_cents` which doesn't
+        # exist -- that would have reported cash_cents=0 for every
+        # live portfolio read and made the degraded-mode monitor
+        # flip on the first execution.
+        cash = int(getattr(bal, "balance", 0) or (
             bal.get("balance", 0) if isinstance(bal, dict) else 0
         ))
         positions: dict[str, int] = {}
@@ -133,9 +140,18 @@ class LiveKalshiAPI:
             ticker = getattr(p, "ticker", None) or (
                 p.get("ticker") if isinstance(p, dict) else None
             )
-            count = getattr(p, "position", None) or (
-                p.get("position") if isinstance(p, dict) else 0
+            # PositionModel.position_fp is a fixed-point STRING like
+            # "10" or "-5.5". Parse via Decimal -> int. Pre-audit code
+            # read `.position` which doesn't exist.
+            count_raw = getattr(p, "position_fp", None) or (
+                p.get("position_fp") if isinstance(p, dict) else None
             )
+            count = 0
+            if count_raw is not None and count_raw != "":
+                try:
+                    count = int(Decimal(str(count_raw)))
+                except (InvalidOperation, ValueError, TypeError):
+                    count = 0
             if ticker is not None:
-                positions[str(ticker)] = int(count or 0)
+                positions[str(ticker)] = count
         return PortfolioSnapshot(cash_cents=cash, positions=positions, at_ms=clock.now_ms())
