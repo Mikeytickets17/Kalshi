@@ -43,6 +43,7 @@ import asyncio
 import re
 import statistics
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,8 @@ from ..rest.client import RestClient, RestConfig
 from .analysis import (
     PROBE_COID_PREFIX,
     ProbeResults,
+    build_failed_detail_lines,
+    build_summary_line,
     build_yaml_body,
     probe_coid,
     rate_limit_summary,
@@ -151,6 +154,22 @@ class RealProbeTransport:
         feed = self.rest.async_underlying().feed()
         msg_counter: dict[str, int] = {}
 
+        # Build the sequence of step sizes to probe. Historically this
+        # was `range(step_size, len(tickers)+1, step_size)` which is
+        # EMPTY when the pool is smaller than step_size (e.g., a
+        # 40-ticker crypto-only universe under a 50-step). Empty loop
+        # => max_confirmed_tickers stays at 0 => threshold gate fails
+        # with an opaque "< required" message even though the real
+        # problem is "not enough markets in the whitelist". The fix:
+        # always include the full pool size as the terminal checkpoint,
+        # and always include at least one checkpoint if tickers exist.
+        n = len(tickers)
+        checkpoints: list[int] = list(range(step_size, n + 1, step_size))
+        if n > 0 and (not checkpoints or checkpoints[-1] != n):
+            checkpoints.append(n)
+        # Dedupe + sort defensively.
+        checkpoints = sorted(set(checkpoints))
+
         async with feed as f:
             @f.on("orderbook_delta")
             def _count(msg: Any) -> None:
@@ -160,7 +179,7 @@ class RealProbeTransport:
                 if t:
                     msg_counter[t] = msg_counter.get(t, 0) + 1
 
-            for upper in range(step_size, len(tickers) + 1, step_size):
+            for upper in checkpoints:
                 slice_ = tickers[:upper]
                 try:
                     f.subscribe("orderbook_delta", market_tickers=slice_)
@@ -185,7 +204,11 @@ class RealProbeTransport:
                     "receiving_messages": active,
                     "coverage_pct": round(100 * active / max(1, upper), 1),
                 })
-                if active < upper * 0.25 and upper > step_size:
+                # Silent drop-off detection only applies once we're
+                # above the first checkpoint and have step headroom
+                # to compare against. A sub-step pool (e.g. 40 tickers
+                # with step=50) doesn't qualify for this check.
+                if upper > step_size and active < upper * 0.25:
                     result["failed_at_tickers"] = upper
                     result["failure_mode"] = f"silent_drop_off at {active}/{upper}"
                     break
@@ -517,15 +540,31 @@ async def run(
             timeout=timeout_sec,
         )
     except asyncio.TimeoutError as exc:
+        # Surface whatever we managed to measure before emitting the
+        # failure so the operator can see partial numbers even on
+        # timeout. `build_summary_line` handles missing fields.
+        _emit_summary_line(results)
         raise ProbeFailure(
             f"probe suite exceeded {timeout_sec}s timeout"
         ) from exc
+
+    # Always print the measurement summary, whether we PASS or FAIL.
+    # This is the line verify_prod_probe.bat pulls into the popup so
+    # the operator sees every measured number at a glance.
+    _emit_summary_line(results)
 
     # Strict acceptance in prod only. Demo yamls are informational and
     # get written as-is.
     if env == "prod":
         failures = validate_prod_results(results)
         if failures:
+            # Emit each specific failure reason as its own stderr line
+            # with a stable `PROBE FAILED DETAIL: ` prefix. The .bat
+            # Select-Strings every matching line so the popup headline
+            # shows every threshold that missed, not just the first.
+            for line in build_failed_detail_lines(failures):
+                sys.stderr.write(line + "\n")
+            sys.stderr.flush()
             raise ProbeFailure(
                 "prod probe thresholds not met:\n  - "
                 + "\n  - ".join(failures)
@@ -535,6 +574,16 @@ async def run(
     if write_enabled:
         _write_results(results, path=write_path)
     return results
+
+
+def _emit_summary_line(results: ProbeResults) -> None:
+    """Print the single-line measurement snapshot to stderr. Safe to
+    call with an incomplete ProbeResults (missing fields render as
+    'n/a'). Called on success, failure, AND timeout."""
+    line = build_summary_line(results)
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+    _log.info("probe.summary", line=line)
 
 
 async def _run_suite(
