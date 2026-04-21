@@ -62,6 +62,8 @@ from .analysis import (
     build_failed_detail_lines,
     build_summary_line,
     build_yaml_body,
+    fill_count_from_response,
+    order_id_from_response,
     probe_coid,
     rate_limit_summary,
     validate_prod_results,
@@ -222,7 +224,22 @@ class RealProbeTransport:
                     result["failed_at_tickers"] = upper
                     result["failure_mode"] = f"silent_drop_off at {active}/{upper}"
                     break
-                result["max_confirmed_tickers"] = upper
+                # Only record a confirmed step if we actually received
+                # messages from AT LEAST ONE ticker in the slice. The
+                # pre-audit code recorded upper unconditionally, which
+                # made demo runs (quiet markets, zero events) report
+                # max_confirmed_tickers=50 with coverage_pct=0.0 -- a
+                # contradiction that masked genuine subscription
+                # failures.
+                if active > 0:
+                    result["max_confirmed_tickers"] = upper
+                elif upper == step_size:
+                    # First step with zero activity: don't claim
+                    # confirmation, but don't break either -- real prod
+                    # quiet windows shouldn't abort the probe. Continue
+                    # to the next step; if THAT step also has zero, the
+                    # drop-off guard above kicks in.
+                    pass
         return result
 
     async def rest_write_latency(
@@ -267,12 +284,8 @@ class RealProbeTransport:
                 latency_ms = (time.monotonic() - t0) * 1000
                 latencies_ms.append(latency_ms)
                 errors.record_success()
-                order_id = getattr(resp, "order_id", None) or (
-                    resp.get("order_id") if isinstance(resp, dict) else None
-                )
-                filled = int(getattr(resp, "filled_count", 0) or (
-                    resp.get("filled_count", 0) if isinstance(resp, dict) else 0
-                ))
+                order_id = order_id_from_response(resp)
+                filled = fill_count_from_response(resp)
             except Exception as exc:  # noqa: BLE001
                 errors.record(exc, context={
                     "iter": i, "ticker": ticker, "coid": coid,
@@ -450,12 +463,8 @@ class RealProbeTransport:
                     latencies_ms.append(roundtrip_ms)
                     orders_fired += 1
                     errors.record_success()
-                    order_id = getattr(resp, "order_id", None) or (
-                        resp.get("order_id") if isinstance(resp, dict) else None
-                    )
-                    filled = int(getattr(resp, "filled_count", 0) or (
-                        resp.get("filled_count", 0) if isinstance(resp, dict) else 0
-                    ))
+                    order_id = order_id_from_response(resp)
+                    filled = fill_count_from_response(resp)
                 except Exception as exc:  # noqa: BLE001
                     errors.record(exc, context={
                         "iter": events_seen, "ticker": ticker, "coid": coid,

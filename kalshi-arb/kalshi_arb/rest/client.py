@@ -134,19 +134,26 @@ class RestClient:
     # ---------- Orderbook snapshot (gap recovery) ----------
 
     def get_orderbook(self, ticker: str, depth: int = 10) -> dict[str, Any]:
-        """GET /markets/{ticker}/orderbook — returns {yes: [[price, size]], no: [...]}."""
-        # pykalshi exposes this as a method on the client; if signature drifts,
-        # adapt here rather than in callers.
+        """GET /markets/{ticker}/orderbook -- returns {yes: [[price, size]], no: [...]}.
+
+        pykalshi exposes the orderbook on the Market object (not on the
+        top-level client). Older code called a non-existent
+        `client.get_market_orderbook(...)` and a fallback raw GET with
+        a malformed path; this path walks the real API. When pykalshi
+        changes shape, adapt here rather than in every caller (WS
+        consumer's gap-recovery path).
+        """
+        market = self._pyk.get_market(ticker)
         try:
-            raw = self._pyk.get_market_orderbook(ticker=ticker, depth=depth)
-        except AttributeError:
-            # older pykalshi: fallback via raw GET
-            raw = self._pyk.get("markets/" + ticker + "/orderbook", params={"depth": depth})
+            raw = market.get_orderbook(depth=depth) if depth else market.get_orderbook()
+        except TypeError:
+            # Some pykalshi versions require depth kwarg to be None, not int.
+            raw = market.get_orderbook()
         if hasattr(raw, "model_dump"):
             return raw.model_dump()
         if isinstance(raw, dict):
             return raw
-        # Last resort: attribute-scrape
+        # Last resort: attribute-scrape (kept for defensive parity).
         return {
             "yes": getattr(raw, "yes", []) or [],
             "no": getattr(raw, "no", []) or [],
@@ -155,8 +162,12 @@ class RestClient:
     # ---------- Health / probe helpers ----------
 
     def server_time(self) -> int | None:
+        # pykalshi exposes exchange-level endpoints under client.exchange
+        # (cached_property). The pre-audit `get_exchange_status()` call
+        # did not exist anywhere on KalshiClient and would have raised
+        # AttributeError on first invocation.
         try:
-            t = self._pyk.get_exchange_status()
+            t = self._pyk.exchange.get_status()
             ts = getattr(t, "server_time", None) or getattr(t, "timestamp", None)
             if ts is None:
                 return None
@@ -171,7 +182,7 @@ class RestClient:
         """Round-trip a cheap GET (exchange status). Returns ms, or -1 on error."""
         t0 = time.monotonic()
         try:
-            self._pyk.get_exchange_status()
+            self._pyk.exchange.get_status()
             return (time.monotonic() - t0) * 1000
         except Exception as exc:  # noqa: BLE001
             _log.warning("rest.ping_failed", error=str(exc))
