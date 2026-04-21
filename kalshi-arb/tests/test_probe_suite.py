@@ -176,7 +176,7 @@ def test_prod_run_uses_probe_coid_tags(tmp_path: Path):
 def test_prod_run_with_too_few_ws_tickers_fails_and_no_yaml(tmp_path: Path):
     transport = FakeProbeTransport(
         ws_result={
-            "max_confirmed_tickers": 10,   # below 50 threshold
+            "max_confirmed_tickers": 5,   # below PROD_MIN_WS_CONFIRMED_TICKERS (10)
             "failed_at_tickers": None,
             "failure_mode": None,
             "steps": [],
