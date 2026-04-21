@@ -103,6 +103,20 @@ def _ioc() -> Any:
     return TimeInForce.IOC
 
 
+def _buy_yes() -> tuple[Any, Any]:
+    """Return (Action.BUY, Side.YES) as real pykalshi enum instances.
+
+    pykalshi/_sync/portfolio.py::_build_order_data unconditionally calls
+    `.value` on action / side -- passing raw strings crashes with
+    `AttributeError: 'str' object has no attribute 'value'`. The prior
+    four PRs missed this because our self-written fakes accepted
+    strings. Always go through this helper so the audit's Part-4
+    source inspection keeps passing."""
+    from pykalshi.enums import Action, Side
+
+    return Action.BUY, Side.YES
+
+
 # ---------------------------------------------------------------------
 # Per-probe transport interface. Real impl wraps pykalshi; test impl is
 # a deterministic in-memory fake. See `RealProbeTransport` below and
@@ -265,6 +279,7 @@ class RealProbeTransport:
         errors = ErrorCapture(max_unique=5)
         unexpected_fills = 0
 
+        action, side = _buy_yes()
         for i in range(samples):
             coid = probe_coid(clock.now_ms(), i, tag=coid_tag)
             t0 = time.monotonic()
@@ -274,8 +289,8 @@ class RealProbeTransport:
                 resp = await asyncio.to_thread(
                     self.rest.underlying.portfolio.place_order,
                     ticker=ticker,
-                    action="buy",
-                    side="yes",
+                    action=action,
+                    side=side,
                     count_fp="1",
                     yes_price_dollars="0.01",
                     client_order_id=coid,
@@ -448,12 +463,13 @@ class RealProbeTransport:
                 coid = probe_coid(clock.now_ms(), events_seen, tag=coid_tag)
                 order_id = None
                 filled = 0
+                action, side = _buy_yes()
                 try:
                     resp = await asyncio.to_thread(
                         self.rest.underlying.portfolio.place_order,
                         ticker=ticker,
-                        action="buy",
-                        side="yes",
+                        action=action,
+                        side=side,
                         count_fp="1",
                         yes_price_dollars="0.01",
                         client_order_id=coid,

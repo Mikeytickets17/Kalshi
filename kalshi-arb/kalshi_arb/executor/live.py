@@ -65,8 +65,15 @@ class LiveKalshiAPI:
             #   * time_in_force: pykalshi's TimeInForce enum; map "IOC"
             #     -> TimeInForce.IOC and leave other strings raw so the
             #     SDK can validate.
-            from pykalshi.enums import TimeInForce
+            from pykalshi.enums import Action, Side, TimeInForce
 
+            # pykalshi's _build_order_data unconditionally dereferences
+            # .value on action / side / time_in_force. Passing our
+            # internal strings ("buy" / "yes" / "IOC") triggers
+            # `AttributeError: 'str' object has no attribute 'value'`.
+            # Convert every enum arg to its real pykalshi instance.
+            action_map = {"buy": Action.BUY, "sell": Action.SELL}
+            side_map = {"yes": Side.YES, "no": Side.NO}
             tif_map = {
                 "IOC": TimeInForce.IOC,
                 "GTC": TimeInForce.GTC,
@@ -74,8 +81,8 @@ class LiveKalshiAPI:
             }
             kwargs = {
                 "ticker": req.market_ticker,
-                "action": req.action,
-                "side": req.side,
+                "action": action_map.get(req.action, req.action),
+                "side": side_map.get(req.side, req.side),
                 "count_fp": str(req.count),
                 "client_order_id": req.client_order_id,
                 "time_in_force": tif_map.get(req.time_in_force, req.time_in_force),
