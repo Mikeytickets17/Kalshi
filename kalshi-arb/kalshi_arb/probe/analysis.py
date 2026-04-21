@@ -7,6 +7,7 @@ pass/fail classification without touching the pykalshi REST client.
 
 from __future__ import annotations
 
+import json
 import statistics
 from dataclasses import dataclass, field
 from typing import Any
@@ -284,3 +285,141 @@ def build_failed_detail_lines(reasons: list[str]) -> list[str]:
     line so the .bat can Select-String ALL of them into the popup
     (not just the first line of the ProbeFailure message)."""
     return [FAIL_DETAIL_PREFIX + r for r in reasons]
+
+
+# ---------------------------------------------------------------------
+# Error-response surface (operator-facing "why did Kalshi reject?")
+# ---------------------------------------------------------------------
+
+# Body length cap for the single-line popup render. Raw bodies from
+# Kalshi include request-ID headers and other noise; truncate so one
+# group still fits on one popup bullet.
+_ERROR_BODY_MAX = 180
+
+
+def parse_kalshi_error_body(body: str | None) -> str | None:
+    """Pull 'code: message' from a Kalshi JSON error response.
+
+    Kalshi returns JSON like:
+        {"error": {"code": "insufficient_buying_power",
+                   "message": "balance=$27, required=$0.50"}}
+    The executor's LiveKalshiAPI surface wraps this; in probe we see the
+    raw httpx.HTTPStatusError body. This parser is tolerant:
+
+      - bytes / str input
+      - nested under 'error' (Kalshi shape) or top-level
+      - either field may be missing; we return whatever's available
+
+    Returns None when the body is non-JSON or carries no usable fields,
+    so the caller can fall back to the raw excerpt."""
+    if body is None:
+        return None
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    err = data.get("error")
+    if isinstance(err, dict):
+        code = err.get("code") or err.get("kind") or ""
+        msg = err.get("message") or err.get("detail") or ""
+    else:
+        code = data.get("code") or data.get("kind") or ""
+        msg = data.get("message") or data.get("detail") or ""
+    code = str(code).strip()
+    msg = str(msg).strip()
+    if code and msg:
+        return f"{code}: {msg}"
+    return code or msg or None
+
+
+def _render_error_sample(sample: dict[str, Any]) -> str:
+    """Format one ErrorCapture sample as
+    `HTTP {status} "{code: message}"` or the best fallback if the
+    status/body aren't present."""
+    status = sample.get("http_status")
+    body = sample.get("body_excerpt", "") or sample.get("message", "")
+    parsed = parse_kalshi_error_body(body)
+    detail = parsed if parsed else (body or "").strip()
+    detail = detail.replace("\n", " ").replace("\r", " ")
+    if len(detail) > _ERROR_BODY_MAX:
+        detail = detail[:_ERROR_BODY_MAX - 3] + "..."
+    if status is not None:
+        prefix = f"HTTP {status}"
+    else:
+        prefix = sample.get("error_class", "error") or "error"
+    return f'{prefix} "{detail}"' if detail else prefix
+
+
+def summarize_error_groups(
+    errors_summary: dict[str, Any] | None, *, label: str
+) -> list[str]:
+    """Turn an ErrorCapture.to_dict() blob into one popup-ready line per
+    unique (status, body-signature) group, sorted by frequency.
+
+    Shape of each returned string:
+        "{label} {count}x HTTP {status} \"{code: message}\""
+    e.g.
+        "REST WRITE 100x HTTP 403 \"insufficient_buying_power: balance=$27, required=$0.50\""
+        "E2E LOOP 30x HTTP 401 \"invalid_signature\""
+
+    Empty list when there are no captured samples -- callers can
+    safely iterate the return without guard checks. Groups are
+    sorted by count descending so the most-common failure leads."""
+    if not errors_summary:
+        return []
+    samples = errors_summary.get("samples") or []
+    if not samples:
+        return []
+    ranked = sorted(
+        samples,
+        key=lambda s: int(s.get("count", 1) or 1),
+        reverse=True,
+    )
+    out: list[str] = []
+    for s in ranked:
+        count = int(s.get("count", 1) or 1)
+        body = _render_error_sample(s)
+        out.append(f"{label} {count}x {body}")
+    return out
+
+
+def build_error_detail_lines(
+    results: ProbeResults, *, block_labels: dict[str, str] | None = None
+) -> list[str]:
+    """Compose `PROBE FAILED DETAIL:` lines for every probe block that
+    captured one or more errors. Called AFTER validate_prod_results
+    (whose threshold-miss messages come first) so the operator sees:
+
+        PROBE FAILED DETAIL: rest_write_latency_ms: success_rate=0.0% < required 80.0%
+        PROBE FAILED DETAIL: REST WRITE 100x HTTP 403 "insufficient_buying_power: ..."
+        PROBE FAILED DETAIL: E2E LOOP 30x HTTP 403 "insufficient_buying_power: ..."
+
+    block_labels lets callers customise the display label per block;
+    defaults to sensible prefixes."""
+    labels = block_labels or {
+        "rest_write_latency_ms": "REST WRITE",
+        "end_to_end_loop_ms": "E2E LOOP",
+        "rest_rate_limit": "RATE LIMIT",
+    }
+    lines: list[str] = []
+    for block_name, label in labels.items():
+        block = getattr(results, block_name, None)
+        if not isinstance(block, dict):
+            continue
+        es = block.get("errors_summary")
+        if not isinstance(es, dict):
+            continue
+        total_calls = int(es.get("total_calls", 0) or 0)
+        total_errors = int(es.get("total_errors", 0) or 0)
+        if total_errors <= 0:
+            continue
+        # Header line lets the operator see the failure ratio BEFORE
+        # the per-group bullets. Matches the spec:
+        #   "REST WRITE FAILURES: 100/100 failed"
+        header = f"{label} FAILURES: {total_errors}/{total_calls} failed"
+        lines.append(header)
+        lines.extend(summarize_error_groups(es, label=label))
+    return lines
